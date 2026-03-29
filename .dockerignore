@@ -1,0 +1,6 @@
+instant_policy.pdf
+media/
+checkpoints/
+*.pyc
+__pycache__/
+.git/

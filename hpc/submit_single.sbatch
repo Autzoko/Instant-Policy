@@ -1,0 +1,40 @@
+#!/bin/bash
+# =============================================================
+# submit_single.sbatch - Run one RLBench task evaluation
+#
+# Usage:
+#   sbatch hpc/submit_single.sbatch
+#   TASK_NAME=open_box sbatch hpc/submit_single.sbatch
+# =============================================================
+
+#SBATCH --job-name=ip-sim
+#SBATCH --account=<YOUR_ACCOUNT>          # ← Replace: run `my_slurm_accounts`
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64GB
+#SBATCH --gres=gpu:1
+#SBATCH --time=02:00:00
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
+
+# Create log dir
+mkdir -p "${HOME}/instant_policy/logs"
+
+# --- Configuration ---
+export PROJECT_DIR="${HOME}/instant_policy"
+export TASK_NAME="${TASK_NAME:-plate_out}"
+export NUM_DEMOS="${NUM_DEMOS:-2}"
+export NUM_ROLLOUTS="${NUM_ROLLOUTS:-10}"
+
+echo "Job ID: $SLURM_JOB_ID"
+echo "Node:   $SLURMD_NODENAME"
+echo "GPU:    $CUDA_VISIBLE_DEVICES"
+echo "Task:   $TASK_NAME"
+
+# --- Run inside Singularity container ---
+singularity exec --nv \
+    --bind "${HOME}:${HOME}" \
+    --bind "/scratch/${USER}:/scratch/${USER}" \
+    "/scratch/${USER}/instant-policy.sif" \
+    bash "${PROJECT_DIR}/hpc/run_sim.sh"
