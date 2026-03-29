@@ -19,19 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# 2. Install Python 3.10 from deadsnakes PPA
-# ============================================================
-RUN add-apt-repository ppa:deadsnakes/ppa -y \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        python3.10 python3.10-dev python3.10-distutils python3.10-venv \
-    && rm -rf /var/lib/apt/lists/* \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 \
-    && update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 \
-    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
-
-# ============================================================
-# 3. Install Miniconda
+# 2. Install Miniconda (Python 3.10 will be managed by conda)
 # ============================================================
 RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh \
     && bash /tmp/miniconda.sh -b -p /opt/conda \
