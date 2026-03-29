@@ -116,9 +116,10 @@ RUN source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
 RUN source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
     python -c "\
 import torch; print('PyTorch:', torch.__version__); \
-import torch_geometric; print('PyG:', torch_geometric.__version__); \
 print('CUDA compiled:', torch.version.cuda); \
 import open3d; print('Open3D:', open3d.__version__); \
+print('torch-geometric package present:', __import__('importlib').util.find_spec('torch_geometric') is not None); \
+print('NOTE: CUDA extensions (pyg-lib, torch-scatter, torch-cluster) require GPU at runtime.'); \
 "
 
 # ============================================================
