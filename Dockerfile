@@ -19,16 +19,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# 2. Install Miniconda (Python 3.10 will be managed by conda)
+# 2. Install Miniconda
+#    Pin a specific version to avoid TOS/breaking changes.
 # ============================================================
-RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh \
+RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-py310_24.1.2-0-Linux-x86_64.sh \
+        -O /tmp/miniconda.sh \
     && bash /tmp/miniconda.sh -b -p /opt/conda \
     && rm /tmp/miniconda.sh
 ENV PATH=/opt/conda/bin:$PATH
-RUN conda init bash
+
+# Bypass Anaconda TOS prompt (non-interactive Docker build)
+# and configure conda for non-interactive use
+RUN conda config --set auto_activate_base false \
+    && conda init bash
 
 # ============================================================
-# 4. Install CoppeliaSim V4.1.0
+# 3. Install CoppeliaSim V4.1.0
 # ============================================================
 ENV COPPELIASIM_ROOT=/opt/CoppeliaSim
 ENV LD_LIBRARY_PATH=${COPPELIASIM_ROOT}:${LD_LIBRARY_PATH}
@@ -41,32 +47,35 @@ RUN wget -q https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0
     && rm /tmp/coppeliasim.tar.xz
 
 # ============================================================
-# 5. Create conda environment (ip_env) with core dependencies
-#    Using explicit installs instead of environment.yml to avoid
-#    platform-specific build hash mismatches.
+# 4. Create conda environment (ip_env)
+#    Use conda-forge as default channel to avoid Anaconda TOS.
 # ============================================================
-RUN conda create -n ip_env python=3.10 -y
+RUN conda create -n ip_env python=3.10 -y -c conda-forge --override-channels
 
-# Install PyTorch + CUDA 11.8
-RUN /bin/bash -c "source activate ip_env && \
+# Helper: all subsequent conda/pip commands run inside ip_env.
+# We use CONDA_PREFIX + shell source pattern for reliability.
+SHELL ["/bin/bash", "-c"]
+
+# ---- PyTorch + CUDA 11.8 ----
+RUN source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
     conda install -y pytorch==2.2.0 torchvision torchaudio pytorch-cuda=11.8 \
-        -c pytorch -c nvidia"
+        -c pytorch -c nvidia -c conda-forge --override-channels
 
-# Install PyTorch Geometric + extensions
-RUN /bin/bash -c "source activate ip_env && \
+# ---- PyTorch Geometric + extensions ----
+RUN source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
     conda install -y pyg==2.5.0 pytorch-scatter pytorch-cluster \
-        -c pyg -c pytorch -c nvidia"
+        -c pyg -c pytorch -c nvidia -c conda-forge --override-channels
 
-# Install other conda packages
-RUN /bin/bash -c "source activate ip_env && \
+# ---- Scientific stack ----
+RUN source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
     conda install -y \
         numpy==1.26.4 scipy scikit-learn \
         pyyaml tqdm pillow \
         pytorch-lightning lightning \
-    -c pytorch -c conda-forge"
+        -c conda-forge --override-channels
 
-# Install pip packages
-RUN /bin/bash -c "source activate ip_env && \
+# ---- Pip packages ----
+RUN source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
     pip install --no-cache-dir \
         open3d==0.18.0 \
         diffusers==0.31.0 \
@@ -79,34 +88,46 @@ RUN /bin/bash -c "source activate ip_env && \
         gymnasium==1.0.0 \
         wandb \
         gdown \
-        natsort pandas"
+        natsort pandas
 
-# Install pyg-lib
-RUN /bin/bash -c "source activate ip_env && \
+# ---- pyg-lib (needs matching torch+cuda wheel) ----
+RUN source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
     pip install --no-cache-dir pyg-lib \
-        -f https://data.pyg.org/whl/torch-2.2.0+cu118.html"
+        -f https://data.pyg.org/whl/torch-2.2.0+cu118.html
 
 # ============================================================
-# 6. Install PyRep (Python bindings for CoppeliaSim)
+# 5. Install PyRep (Python bindings for CoppeliaSim)
 # ============================================================
-RUN /bin/bash -c "source activate ip_env && \
+RUN source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
     cd /tmp && git clone https://github.com/stepjam/PyRep.git && \
     cd PyRep && pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir . && \
-    rm -rf /tmp/PyRep"
+    rm -rf /tmp/PyRep
 
 # ============================================================
-# 7. Install RLBench
+# 6. Install RLBench
 # ============================================================
-RUN /bin/bash -c "source activate ip_env && \
-    pip install --no-cache-dir git+https://github.com/stepjam/RLBench.git"
+RUN source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
+    pip install --no-cache-dir git+https://github.com/stepjam/RLBench.git
 
 # ============================================================
-# 8. Default environment variables
+# 7. Verify installation
+# ============================================================
+RUN source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
+    python -c "\
+import torch; print('PyTorch:', torch.__version__); \
+import torch_geometric; print('PyG:', torch_geometric.__version__); \
+print('CUDA compiled:', torch.version.cuda); \
+import open3d; print('Open3D:', open3d.__version__); \
+"
+
+# ============================================================
+# 8. Environment defaults
 # ============================================================
 ENV DISPLAY=:99
 
-# Default working directory
-WORKDIR /workspace
+# Reset to default shell
+SHELL ["/bin/sh", "-c"]
 
+WORKDIR /workspace
 CMD ["/bin/bash"]
