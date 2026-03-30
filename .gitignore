@@ -1,0 +1,10 @@
+*.tar.gz
+*.pdf
+*.so
+*.pyc
+__pycache__/
+*.egg-info/
+checkpoints/
+checkpoints_ip/
+checkpoints_lang/
+.env
