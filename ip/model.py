@@ -284,14 +284,24 @@ class GraphDiffusionPolicy(nn.Module):
         grip_k = grip_k.squeeze(0)  # (T,)
 
         # 4. Build action local subgraphs with noisy actions, run σ
+        #    Appendix E: "we apply the inverse of these actions to the M points
+        #    representing the scene and construct local graphs of actions as
+        #    G_l^a(T_EA^{-1} × P^t, T_WE^t, a_g)"
+        #    P^t is the CURRENT observation point cloud in EE frame.
         action_feats_list = []
         action_pos_list = []
         cur_T_we = batch['current']['T_w_e'].to(device)
 
+        # Get current observation PCD in EE frame (same as inference)
+        pcd_cur_world = batch['current']['pcd'].to(device)
+        T_ew_cur = invert_se3(cur_T_we.unsqueeze(0)).squeeze(0)
+        pcd_ee_cur = transform_points(
+            T_ew_cur.unsqueeze(0), pcd_cur_world.unsqueeze(0)
+        ).squeeze(0)
+
         for t in range(c.pred_horizon):
-            # Scene in EE frame, transformed by inverse action (Appendix E)
+            # Transform current EE-frame PCD by inverse noisy action
             T_ea_inv = invert_se3(T_EA_k[t].unsqueeze(0)).squeeze(0)
-            pcd_ee_cur = batch['actions']['pcds'][t].to(device)
             pcd_action = transform_points(T_ea_inv.unsqueeze(0),
                                            pcd_ee_cur.unsqueeze(0)).squeeze(0)
             cent, feat = self._encode_pcd(pcd_action.unsqueeze(0))
