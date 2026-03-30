@@ -156,22 +156,22 @@ def ddim_reverse_step(
     gripper_pos_k: torch.Tensor,     # (T, K, 3) noisy action keypoint positions
     predicted_flow: torch.Tensor,    # (T, K, 7) [dp_t(3), dp_r(3), dg(1)]
     grip_k: torch.Tensor,           # (T,) noisy gripper
-    k: int,                          # current diffusion step (counting down)
+    k: int,                          # current diffusion step index in schedule
+    k_prev: int,                     # previous (target) step index in schedule
     schedule: NoiseSchedule,
     kp: torch.Tensor,               # (K, 3) reference keypoints
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    One DDIM denoising step.
+    One DDIM denoising step (Eq. 4, Song et al. 2020).
 
-    1. Estimate clean positions: p̂_0 = p_k + ∇p_t + ∇p_r
-    2. DDIM interpolation → p_{k-1}
-    3. SVD alignment → T_{k-1,k}
-    4. Apply to get a^{k-1}
+    k and k_prev are indices into the schedule's alpha_cumprod array.
+    When subsampling steps (e.g. [19,14,9,4,0]), k_prev is the NEXT
+    index in that subsampled sequence, NOT simply k-1.
 
     Returns:
-        T_EA_km1:       (T, 4, 4)  updated actions at step k-1
-        gripper_pos_km1: (T, K, 3) updated keypoint positions
-        grip_km1:        (T,)      updated gripper
+        T_step:          (T, 4, 4)  incremental SE(3) transform this step
+        gripper_pos_km1: (T, K, 3)  updated keypoint positions
+        grip_km1:        (T,)       updated gripper
     """
     dp_t = predicted_flow[..., :3]   # (T, K, 3)
     dp_r = predicted_flow[..., 3:6]  # (T, K, 3)
@@ -182,8 +182,8 @@ def ddim_reverse_step(
 
     # 2. DDIM step (Eq. 4)
     alpha_k = schedule.alpha_cumprod[k]
-    if k > 0:
-        alpha_km1 = schedule.alpha_cumprod[k - 1]
+    if k_prev >= 0:
+        alpha_km1 = schedule.alpha_cumprod[k_prev]
     else:
         alpha_km1 = torch.tensor(1.0, device=gripper_pos_k.device)
 
@@ -241,10 +241,10 @@ def full_denoise(
 
     for i, k in enumerate(step_indices):
         k_int = k.item()
-        k_prev = step_indices[i + 1].item() if i + 1 < len(step_indices) else 0
+        k_prev_int = step_indices[i + 1].item() if i + 1 < len(step_indices) else -1
         flow = predict_fn(pos, grip, k_int)
         T_step, pos, grip = ddim_reverse_step(
-            pos, flow, grip, k_int, schedule, kp
+            pos, flow, grip, k_int, k_prev_int, schedule, kp
         )
         T_accum = T_step @ T_accum
 

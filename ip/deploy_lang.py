@@ -182,6 +182,7 @@ class LanguageGuidedPolicy:
 
         for i, k_idx in enumerate(step_indices):
             k = k_idx.item()
+            k_prev = step_indices[i + 1].item() if i + 1 < len(step_indices) else -1
 
             # Build action subgraphs with current noisy positions
             action_feats_list = []
@@ -213,7 +214,7 @@ class LanguageGuidedPolicy:
             action_pos_reshaped = action_pos.reshape(T_pred, K, 3)
             T_step, action_pos_new, grip_pred = ddim_reverse_step(
                 action_pos_reshaped, flow_reshaped, grip_pred,
-                k, self.schedule, kp
+                k, k_prev, self.schedule, kp
             )
             action_pos = action_pos_new.reshape(T_pred * K, 3)
             T_accum = T_step @ T_accum

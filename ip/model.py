@@ -324,16 +324,15 @@ class GraphDiffusionPolicy(nn.Module):
             grip_gt, grip_k.unsqueeze(0), kp
         )  # (1, T, K, 7)
 
-        # 7. Normalise flow targets to [-1, 1] (Appendix E)
-        # Translation flow: normalise by 2 * max_translation
-        # Rotation flow: normalise by 1 (already small)
-        flow_target[..., :3] = flow_target[..., :3] / (2 * c.max_translation)
-        flow_target[..., 3:6] = flow_target[..., 3:6]  # rotation flow kept as-is
-        flow_pred_norm = flow_pred.clone()
-        flow_pred_norm[..., :3] = flow_pred[..., :3]
-        flow_pred_norm[..., 3:6] = flow_pred[..., 3:6]
+        # 7. Normalise both target and prediction to [-1, 1] (Appendix E)
+        # Translation flow: normalise by 2 * max_translation (capped range)
+        # Rotation flow: normalise by 1 (already small, kept as-is)
+        # Gripper gradient: already in [-2, 2], kept as-is
+        norm_t = 2 * c.max_translation
+        flow_target[..., :3] = flow_target[..., :3] / norm_t
+        flow_pred[..., :3] = flow_pred[..., :3] / norm_t
 
-        return diffusion_loss(flow_pred_norm, flow_target)
+        return diffusion_loss(flow_pred, flow_target)
 
     # ──────────────────────────────────────────────────────────────
     # Inference
@@ -387,6 +386,7 @@ class GraphDiffusionPolicy(nn.Module):
 
         for i, k_idx in enumerate(step_indices):
             k = k_idx.item()
+            k_prev = step_indices[i + 1].item() if i + 1 < len(step_indices) else -1
 
             # Build action subgraphs with current noisy positions
             pcd_ee_cur = sample['current']['pcd'].to(device)
@@ -418,7 +418,7 @@ class GraphDiffusionPolicy(nn.Module):
             action_pos_reshaped = action_pos.reshape(T_pred, K, 3)
             T_step, action_pos_new, grip = ddim_reverse_step(
                 action_pos_reshaped, flow_reshaped, grip,
-                k, infer_schedule, kp
+                k, k_prev, infer_schedule, kp
             )
             action_pos = action_pos_new.reshape(T_pred * K, 3)
             T_accum = T_step @ T_accum

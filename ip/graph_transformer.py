@@ -90,11 +90,11 @@ class HeteroAttentionLayer(nn.Module):
                          num_nodes: int) -> torch.Tensor:
         """Softmax over groups defined by idx. logits: (E, H), idx: (E,)."""
         # Numerical stability: subtract max per group
-        max_vals = torch.zeros(num_nodes, logits.shape[1],
-                               device=logits.device, dtype=logits.dtype)
+        max_vals = torch.full((num_nodes, logits.shape[1]), float('-inf'),
+                              device=logits.device, dtype=logits.dtype)
         max_vals.scatter_reduce_(
             0, idx.unsqueeze(-1).expand_as(logits), logits, reduce='amax',
-            include_self=False)
+            include_self=True)
         logits = logits - max_vals[idx]
         exp_logits = logits.exp()
         # Sum per group
