@@ -219,11 +219,14 @@ def interpolate_trajectory(waypoints: List[dict],
     grip_changes = [wp.get('grip_change', False) for wp in waypoints]
     grip_state = 1  # start open
     grip_states = []
+    last_flipped_wp = -1
     for i, t in enumerate(t_dense):
         # Find nearest waypoint
         wp_idx = np.argmin(np.abs(t_wp - t))
-        if grip_changes[wp_idx] and abs(t - t_wp[wp_idx]) < 0.01:
+        if (grip_changes[wp_idx] and wp_idx != last_flipped_wp
+                and abs(t - t_wp[wp_idx]) < 0.01):
             grip_state = 1 - grip_state
+            last_flipped_wp = wp_idx
         grip_states.append(grip_state)
 
     # Build trajectory
@@ -389,6 +392,9 @@ def generate_pseudo_demo_batch(mesh_paths: List[str],
     """
     samples = []
     for _ in range(batch_size):
+        # N total demos: N-1 used as context, 1 as target for action prediction
+        # num_demos_range controls number of context demos (1..5)
+        # N = context + 1 target, so N ranges from range[0]+1 to range[1]+1
         N = np.random.randint(num_demos_range[0] + 1, num_demos_range[1] + 2)
         task_demos = generate_pseudo_task(mesh_paths, num_demos=N)
 

@@ -389,7 +389,13 @@ class GraphDiffusionPolicy(nn.Module):
             k_prev = step_indices[i + 1].item() if i + 1 < len(step_indices) else -1
 
             # Build action subgraphs with current noisy positions
-            pcd_ee_cur = sample['current']['pcd'].to(device)
+            # Transform point cloud from world frame to EE frame (same as training)
+            pcd_cur = sample['current']['pcd'].to(device)
+            T_we_infer = sample['current']['T_w_e'].to(device)
+            T_ew_infer = invert_se3(T_we_infer.unsqueeze(0)).squeeze(0)
+            pcd_ee_cur = transform_points(
+                T_ew_infer.unsqueeze(0), pcd_cur.unsqueeze(0)
+            ).squeeze(0)
             action_feats_list = []
             for t in range(T_pred):
                 # For inference, reuse current observation point cloud
