@@ -1,6 +1,7 @@
 #!/bin/bash
 # =============================================================
 # submit_single.sbatch - Run one RLBench task evaluation
+#                        NYU Torch HPC (overlay + official SIF)
 #
 # Usage:
 #   sbatch hpc/submit_single.sbatch
@@ -18,10 +19,8 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-# Create log dir
 mkdir -p "${HOME}/instant_policy/logs"
 
-# --- Configuration ---
 export PROJECT_DIR="${HOME}/instant_policy"
 export TASK_NAME="${TASK_NAME:-plate_out}"
 export NUM_DEMOS="${NUM_DEMOS:-2}"
@@ -32,9 +31,7 @@ echo "Node:   $SLURMD_NODENAME"
 echo "GPU:    $CUDA_VISIBLE_DEVICES"
 echo "Task:   $TASK_NAME"
 
-# --- Run inside Singularity container ---
 singularity exec --nv \
-    --bind "${HOME}:${HOME}" \
-    --bind "/scratch/${USER}:/scratch/${USER}" \
-    "/scratch/${USER}/instant-policy.sif" \
+    --overlay /scratch/${USER}/instant-policy/overlay-15GB-500K.ext3:ro \
+    /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif \
     bash "${PROJECT_DIR}/hpc/run_sim.sh"
