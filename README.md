@@ -57,15 +57,18 @@ instant_policy/
 
 ### Option A: pip install (recommended)
 
+> **Important:** PyTorch 2.2.0 requires Python 3.10 or 3.11. It does NOT support Python 3.13+.
+> Always specify `python=3.10` when creating the conda environment.
+
 ```bash
 git clone https://github.com/Autzoko/Instant-Policy.git
 cd Instant-Policy
 
-# Create conda environment with Python 3.10 (required — PyTorch 2.2.0 does NOT support 3.13)
+# Create conda environment — MUST specify python=3.10
 conda create -n ip_env python=3.10 -y
 conda activate ip_env
 
-# PyTorch + CUDA 11.8 (pip is more reliable than conda for this)
+# PyTorch + CUDA 11.8 via pip (more reliable than conda)
 pip install torch==2.2.0 torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cu118
 
@@ -77,11 +80,14 @@ pip install torch-scatter torch-cluster torch-sparse \
 # Remaining dependencies
 pip install open3d==0.18.0 sentence-transformers \
     numpy==1.26.4 scipy scikit-learn \
-    trimesh pyquaternion tqdm wandb gdown
+    diffusers==0.31.0 transformers==4.46.2 \
+    trimesh pyquaternion tqdm pillow \
+    wandb gdown matplotlib plotly
 
 # Verify
 python -c "
 import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}')
+print(f'GPU available: {torch.cuda.is_available()}')
 import torch_scatter; print('scatter OK')
 import torch_geometric; print(f'PyG {torch_geometric.__version__}')
 import open3d; print(f'Open3D {open3d.__version__}')
@@ -89,7 +95,27 @@ from sentence_transformers import SentenceTransformer; print('SBERT OK')
 "
 ```
 
-### Option B: Docker
+> **Note:** `pyg-lib` is optional. If it fails to install, skip it — only `torch-scatter`
+> and `torch-cluster` are required. Use `%2B` instead of `+` in wheel URLs if you
+> see "no matching distribution" errors.
+
+### Option B: conda install (alternative)
+
+```bash
+conda create -n ip_env python=3.10 -y
+conda activate ip_env
+
+conda install pytorch==2.2.0 torchvision torchaudio pytorch-cuda=11.8 \
+    -c pytorch -c nvidia -y
+conda install pyg==2.5.0 pytorch-scatter pytorch-cluster \
+    -c pyg -c pytorch -c nvidia -y
+conda install numpy==1.26.4 scipy scikit-learn pytorch-lightning -c conda-forge -y
+
+pip install open3d==0.18.0 sentence-transformers diffusers==0.31.0 \
+    transformers==4.46.2 trimesh pyquaternion wandb gdown
+```
+
+### Option C: Docker
 
 ```bash
 docker build -t instant-policy .
@@ -101,7 +127,7 @@ pip install sentence-transformers
 cd /workspace
 ```
 
-### Option C: NYU HPC
+### Option D: NYU HPC (Greene / Torch clusters)
 
 See [HPC Deployment](#hpc-deployment) section below.
 
@@ -136,22 +162,25 @@ Phase 3: Language transfer   ──→  checkpoints_lang/phi_lang_final.pt (~6-1
 Pre-train the PointNet++ geometry encoder as an occupancy network on ShapeNet objects.
 
 ```bash
+# Download ShapeNet: https://shapenet.org/ (ShapeNetCore.v2)
+# Extract to e.g. /data/ShapeNetCore.v2/
+
 python -m ip.train \
-    --shapenet_root /path/to/ShapeNetCore.v2 \
+    --shapenet_root /data/ShapeNetCore.v2 \
     --save_dir ./checkpoints_ip \
     --phase 1 \
     --device cuda
 ```
 
-Output: `./checkpoints_ip/geo_encoder.pt`
+This saves `./checkpoints_ip/geo_encoder.pt`. Takes ~2-4 hours on a single GPU.
 
 ### Phase 2: Train Graph Diffusion Model
 
-Train the full σ → φ → ψ pipeline on pseudo-demonstrations generated from ShapeNet.
+Train the full σ → φ → ψ pipeline on pseudo-demonstrations.
 
 ```bash
 python -m ip.train \
-    --shapenet_root /path/to/ShapeNetCore.v2 \
+    --shapenet_root /data/ShapeNetCore.v2 \
     --save_dir ./checkpoints_ip \
     --encoder_ckpt ./checkpoints_ip/geo_encoder.pt \
     --phase 2 \
@@ -165,8 +194,6 @@ Training parameters (Appendix E):
 - ~5 days on a single RTX 3080-ti
 
 Checkpoints saved every 10K steps. Resume with `--resume ./checkpoints_ip/model_step100000.pt`.
-
-Output: `./checkpoints_ip/model_final.pt`
 
 ### Phase 3: Train Language Transfer Module
 
@@ -185,7 +212,7 @@ collect_rlbench_lang_data(
 "
 ```
 
-This requires RLBench + CoppeliaSim. Collects ~20 demos per task across 24 tasks.
+This requires RLBench + CoppeliaSim. Collects ~20 demos per task with language descriptions.
 
 **Step 3b: Train φ_lang**
 
@@ -197,12 +224,11 @@ python -m ip.lang.train_lang \
     --device cuda
 ```
 
-Training:
-- Only φ_lang (~45M params) trained; entire IP model frozen
-- AdamW, lr=1e-4, ~100K steps
-- Loss: symmetric InfoNCE contrastive + MSE bottleneck alignment
-
-Output: `./checkpoints_lang/phi_lang_final.pt`
+Training parameters:
+- Only φ_lang parameters trained (~45M); IP model fully frozen
+- AdamW, lr=1e-4
+- ~100K steps
+- Loss: InfoNCE contrastive + MSE bottleneck alignment
 
 ### Language-Guided Deployment
 
@@ -239,45 +265,33 @@ actions, grips = policy.predict_actions(
 
 ## HPC Deployment
 
-### NYU HPC (Greene / Torch)
+### NYU HPC Setup (Greene / Torch)
 
-#### Step 0: Upload Code + Data
-
-```bash
-# From your local machine — upload project code
-rsync -avz --exclude='*.tar.gz' --exclude='*.pdf' --exclude='*.so' \
-    --exclude='__pycache__' --exclude='checkpoints*' --exclude='.git' \
-    . $USER@greene.hpc.nyu.edu:~/instant_policy/
-
-# Upload or download ShapeNet to /scratch/$USER/ShapeNetCore.v2/
-```
-
-#### Step 1: Build Overlay Environment (one-time, ~30 min)
+**1. Build the Singularity overlay (one-time)**
 
 ```bash
-ssh $USER@greene.hpc.nyu.edu
-
-# Get a compute node (local SSD is much faster for package install)
+# On the HPC, get a compute node first (local SSD makes installs much faster)
 srun --account=<YOUR_ACCOUNT> --cpus-per-task=4 --mem=32GB \
      --time=02:00:00 --pty /bin/bash
 
-# Create overlay
+# Create overlay filesystem
 cd /scratch/$USER
 mkdir -p instant-policy && cd instant-policy
 cp -rp /scratch/work/public/overlay-fs-ext3/overlay-15GB-500K.ext3.gz .
 gunzip overlay-15GB-500K.ext3.gz
 
-# Enter container
+# Launch container
 singularity exec --nv \
     --overlay overlay-15GB-500K.ext3 \
     /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif \
     /bin/bash
 ```
 
-Inside the container, install Miniconda + all packages:
+Inside the container, install Miniconda and all packages:
 
 ```bash
 # Install Miniconda to /tmp first (fast local SSD), then copy to overlay
+# IMPORTANT: use the py310 version, NOT "latest" (which defaults to Python 3.13)
 wget -q https://repo.anaconda.com/miniconda/Miniconda3-py310_24.1.2-0-Linux-x86_64.sh
 bash Miniconda3-py310_24.1.2-0-Linux-x86_64.sh -b -p /tmp/miniconda3
 cp -a /tmp/miniconda3 /ext3/miniconda3
@@ -293,11 +307,10 @@ EOF
 source /ext3/env.sh
 
 # Create environment — MUST specify python=3.10
-# (default Python may be 3.13 which is incompatible with PyTorch 2.2.0)
 conda create -n ip_env python=3.10 -y
 conda activate ip_env
 
-# Install everything via pip (faster and more reliable than conda)
+# Install everything via pip (faster and more reliable than conda for PyTorch)
 pip install torch==2.2.0 torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cu118
 
@@ -307,9 +320,10 @@ pip install torch-scatter torch-cluster torch-sparse \
 
 pip install open3d==0.18.0 sentence-transformers \
     numpy==1.26.4 scipy scikit-learn \
+    diffusers==0.31.0 transformers==4.46.2 \
     trimesh pyquaternion tqdm wandb gdown
 
-# Verify
+# Verify installation
 python -c "
 import torch
 print(f'PyTorch: {torch.__version__}, CUDA: {torch.version.cuda}')
@@ -324,7 +338,23 @@ from sentence_transformers import SentenceTransformer; print('SBERT OK')
 exit
 ```
 
-#### Step 2-5: Submit Training Jobs
+**2. Upload project code**
+
+```bash
+# From your local machine:
+rsync -avz --exclude='*.tar.gz' --exclude='*.pdf' --exclude='*.so' \
+    --exclude='__pycache__' --exclude='checkpoints/' \
+    . $USER@greene.hpc.nyu.edu:~/instant_policy/
+```
+
+**3. Download ShapeNet on the HPC**
+
+```bash
+# ShapeNet requires registration: https://shapenet.org/
+# After getting access, download ShapeNetCore.v2 to /scratch/$USER/
+```
+
+**4. Submit training jobs**
 
 Edit all sbatch files to set your account:
 
@@ -333,28 +363,26 @@ cd ~/instant_policy
 sed -i 's/<YOUR_ACCOUNT>/your_actual_account/g' hpc/*.sbatch
 ```
 
-Submit each phase sequentially (each depends on the previous):
+Submit each phase sequentially:
 
 ```bash
-# Phase 1: Geometry encoder (~2-4h)
+# Phase 1: Geometry encoder (~2-4h, 1 GPU)
 sbatch hpc/train_phase1.sbatch
 
-# After Phase 1 completes:
-# Phase 2: Full model (~5 days, RTX 8000 recommended)
+# After Phase 1 completes — Phase 2: Full model (~5 days)
 sbatch hpc/train_phase2.sbatch
 
 # Resume Phase 2 if preempted:
 RESUME=./checkpoints_ip/model_step500000.pt sbatch hpc/train_phase2.sbatch
 
-# After Phase 2 completes:
-# Collect RLBench data (requires CoppeliaSim in overlay, or upload from local)
+# After Phase 2 completes — Collect RLBench data (requires CoppeliaSim)
 sbatch hpc/collect_lang_data.sbatch
 
-# Phase 3: Language transfer (~6-12h)
+# After data collection — Phase 3: Language transfer (~6-12h)
 sbatch hpc/train_phase3.sbatch
 ```
 
-#### Monitor Jobs
+**5. Monitor jobs**
 
 ```bash
 squeue -u $USER                                        # Job status
@@ -363,14 +391,13 @@ sacct -j <JOB_ID> --format=JobID,State,Elapsed,MaxRSS  # Resource usage
 scancel <JOB_ID>                                       # Cancel job
 ```
 
-#### Verify Results
+**6. Verify results**
 
 ```bash
 # Get interactive GPU node
 srun --account=<YOUR_ACCOUNT> --gres=gpu:1 --cpus-per-task=4 \
      --mem=32GB --time=01:00:00 --pty /bin/bash
 
-# Enter container
 singularity exec --nv \
     --overlay /scratch/$USER/instant-policy/overlay-15GB-500K.ext3:ro \
     /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif \
@@ -379,7 +406,6 @@ singularity exec --nv \
 source /ext3/env.sh && conda activate ip_env
 cd ~/instant_policy
 
-# Test language-guided inference
 python -m ip.deploy_lang \
     --ip_checkpoint ./checkpoints_ip/model_final.pt \
     --lang_checkpoint ./checkpoints_lang/phi_lang_final.pt \
@@ -405,7 +431,7 @@ python -m ip.train --shapenet_root /data/ShapeNet --save_dir ./checkpoints_ip --
 # Monitor:
 docker logs -f ip-train
 
-# Without Docker (bare metal with pip setup):
+# Without Docker (bare metal):
 conda activate ip_env
 python -m ip.train --shapenet_root /path/to/ShapeNet --save_dir ./checkpoints_ip --device cuda
 ```
@@ -419,6 +445,14 @@ Collect demonstrations as `demo = {'pcds': [], 'T_w_es': [], 'grips': []}` where
 
 For the original pre-trained model, see `deploy.py`. For language-guided control, see above.
 
+## Notes on Performance
+
+- Objects of interest should be well segmented.
+- Tasks should follow the Markovian assumption (no observation history).
+- Demonstrations should be short and consistent.
+- Model uses point clouds in the end-effector frame.
+- To avoid gripper oscillation, execute until gripper state changes then re-query.
+
 ## Common Issues
 
 | Problem | Cause | Fix |
@@ -427,7 +461,9 @@ For the original pre-trained model, see `deploy.py`. For language-guided control
 | `pyg-lib` install fails | Not required for training | Skip it; only `torch-scatter` and `torch-cluster` are needed |
 | `torch-scatter` install fails | PyTorch/CUDA version mismatch in wheel URL | Use `%2B` instead of `+` in URL: `torch-2.2.0%2Bcu118` |
 | Miniconda unpacking slow on HPC | ext3 overlay has slow random I/O | Install to `/tmp` first, then `cp -a` to overlay |
+| Miniconda `latest` installs Python 3.13 | `latest` always gets newest Python | Use pinned version: `Miniconda3-py310_24.1.2-0-Linux-x86_64.sh` |
 | CUDA not available in Singularity | Missing `--nv` flag | Always use `singularity exec --nv` |
+| `conda: No such file or directory` | env.sh path doesn't match install location | Run `find /ext3 -name conda` and fix path in `/ext3/env.sh` |
 
 ## Citing
 
