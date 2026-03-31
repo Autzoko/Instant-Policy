@@ -157,6 +157,130 @@ Phase 3: Language transfer   ──→  checkpoints_lang/phi_lang_final.pt (~6-1
 - Phase 1+2: [ShapeNet](https://shapenet.org/) (ShapeNetCore.v2, ~30GB, requires registration)
 - Phase 3: [RLBench](https://sites.google.com/view/rlbench) demonstrations (collected automatically, requires CoppeliaSim)
 
+### Data Preparation
+
+#### ShapeNet (Phase 1+2)
+
+ShapeNet provides 3D object meshes used to generate pseudo-demonstrations. Registration is required.
+
+1. Go to https://shapenet.org/ and create an account
+2. After approval (may take 1-2 days), go to **Downloads** and download **ShapeNetCore.v2**
+3. You will get `ShapeNetCore.v2.zip` (~30GB)
+
+```bash
+# Local machine or HPC
+cd /path/to/data   # e.g. /scratch/$USER on HPC
+wget <download_url_from_shapenet>   # or upload via scp
+unzip ShapeNetCore.v2.zip
+
+# Verify — should see category folders with .obj meshes inside
+ls ShapeNetCore.v2/
+# 02691156/  02828884/  02876657/  ... (~55 categories)
+
+find ShapeNetCore.v2/ -name "*.obj" | head -5
+# ShapeNetCore.v2/02691156/1a04e3eab45ca15dd86060f189eb133/model.obj
+# ...
+```
+
+The directory structure looks like:
+```
+ShapeNetCore.v2/
+├── 02691156/               # airplane
+│   ├── 1a04e3eab45ca15d.../
+│   │   └── models/
+│   │       └── model_normalized.obj
+│   └── ...
+├── 02828884/               # bench
+├── 02876657/               # bottle
+├── 03001627/               # chair
+├── 03046257/               # clock
+├── 03790512/               # motorbike
+├── 04256520/               # sofa
+├── 04379243/               # table
+└── ...                     # ~55 categories, ~51K objects total
+```
+
+#### RLBench + CoppeliaSim (Phase 3)
+
+RLBench provides robot manipulation tasks with language descriptions. It requires CoppeliaSim (robot simulator) as a backend.
+
+**Step 1: Install CoppeliaSim**
+
+```bash
+# Download CoppeliaSim V4.1.0 (must match RLBench requirements)
+cd /path/to/tools
+wget https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
+tar xf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
+
+# Set environment variables (add to .bashrc or env.sh)
+export COPPELIASIM_ROOT=/path/to/tools/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04
+export LD_LIBRARY_PATH=$COPPELIASIM_ROOT:$LD_LIBRARY_PATH
+export QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT
+```
+
+**Step 2: Install PyRep + RLBench**
+
+```bash
+conda activate ip_env
+
+# PyRep (Python bindings for CoppeliaSim)
+cd /tmp && git clone https://github.com/stepjam/PyRep.git
+cd PyRep && pip install -r requirements.txt && pip install .
+
+# RLBench
+pip install git+https://github.com/stepjam/RLBench.git
+```
+
+**Step 3: Collect language-annotated demonstrations**
+
+```bash
+cd /path/to/instant_policy
+
+python -c "
+from ip.lang.lang_dataset import collect_rlbench_lang_data
+collect_rlbench_lang_data(
+    save_dir='./lang_data',
+    demos_per_task=20,
+    headless=True
+)
+"
+```
+
+This runs CoppeliaSim in headless mode, collects 20 successful demonstrations per task, and saves them as `.npz` files with point clouds, gripper poses, and gripper states. Each task's language description (e.g. "close the microwave") is mapped via the built-in task description dictionary.
+
+Output structure:
+```
+lang_data/
+├── close_microwave/
+│   ├── demo_0.npz        # Each .npz contains: pcds, T_w_es, grips
+│   ├── demo_1.npz
+│   └── ... (20 files)
+├── open_box/
+│   └── ...
+├── push_button/
+│   └── ...
+└── ... (24 task directories, ~2GB total)
+```
+
+> **Note for HPC:** RLBench requires a virtual display (Xvfb). On HPC, either:
+> - Install CoppeliaSim inside the Singularity overlay and use `Xvfb :99 &; export DISPLAY=:99`
+> - Or collect data on a local machine with Docker and upload to HPC:
+>   ```bash
+>   # Collect locally with Docker
+>   docker build -t instant-policy .
+>   docker run --gpus all -v $(pwd):/workspace instant-policy bash -c "
+>   source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
+>   Xvfb :99 -screen 0 1280x1024x24 & export DISPLAY=:99 && \
+>   cd /workspace && python -c \"
+>   from ip.lang.lang_dataset import collect_rlbench_lang_data
+>   collect_rlbench_lang_data('./lang_data', demos_per_task=20, headless=True)
+>   \"
+>   "
+>
+>   # Upload to HPC
+>   rsync -avz lang_data/ $USER@greene.hpc.nyu.edu:~/instant_policy/lang_data/
+>   ```
+
 ### Phase 1: Pre-train Geometry Encoder
 
 Pre-train the PointNet++ geometry encoder as an occupancy network on ShapeNet objects.
@@ -199,22 +323,9 @@ Checkpoints saved every 10K steps. Resume with `--resume ./checkpoints_ip/model_
 
 Train φ_lang to replace demonstrations with language commands.
 
-**Step 3a: Collect language-annotated demonstrations from RLBench**
+Requires the `lang_data/` directory from the [Data Preparation](#data-preparation) step above.
 
-```bash
-python -c "
-from ip.lang.lang_dataset import collect_rlbench_lang_data
-collect_rlbench_lang_data(
-    save_dir='./lang_data',
-    demos_per_task=20,
-    headless=True
-)
-"
-```
-
-This requires RLBench + CoppeliaSim. Collects ~20 demos per task with language descriptions.
-
-**Step 3b: Train φ_lang**
+**Train φ_lang:**
 
 ```bash
 python -m ip.lang.train_lang \
