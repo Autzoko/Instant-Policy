@@ -26,8 +26,8 @@ echo "Node:      $SLURMD_NODENAME"
 echo "ShapeNet:  $SHAPENET_ROOT"
 echo "Start:     $(date)"
 
-singularity exec --nv \
-    --overlay /scratch/${USER}/instant-policy/overlay-15GB-500K.ext3:ro \
+singularity exec --nv --fakeroot \
+    --overlay /scratch/${USER}/instant-policy/overlay-25GB-500K.ext3:rw \
     /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif \
     /bin/bash -c "
 source /ext3/env.sh

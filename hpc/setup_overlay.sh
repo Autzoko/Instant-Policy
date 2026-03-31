@@ -17,7 +17,7 @@
 set -e
 
 OVERLAY_DIR="/scratch/${USER}/instant-policy"
-OVERLAY_FILE="${OVERLAY_DIR}/overlay-15GB-500K.ext3"
+OVERLAY_FILE="${OVERLAY_DIR}/overlay-25GB-500K.ext3"
 SIF="/share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif"
 
 echo "============================================"
@@ -31,9 +31,9 @@ mkdir -p "${OVERLAY_DIR}"
 
 if [ ! -f "${OVERLAY_FILE}" ]; then
     echo "[1/4] Creating overlay filesystem..."
-    cp -rp /scratch/work/public/overlay-fs-ext3/overlay-15GB-500K.ext3.gz "${OVERLAY_DIR}/"
+    cp -rp /scratch/work/public/overlay-fs-ext3/overlay-25GB-500K.ext3.gz "${OVERLAY_DIR}/"
     cd "${OVERLAY_DIR}"
-    gunzip overlay-15GB-500K.ext3.gz
+    gunzip overlay-25GB-500K.ext3.gz
     echo "  Done."
 else
     echo "[1/4] Overlay already exists, skipping."
@@ -42,7 +42,7 @@ fi
 # ── Step 2-4: Install everything inside the container ───────
 echo "[2/4] Launching container to install packages..."
 
-singularity exec --nv \
+singularity exec --nv --fakeroot \
     --overlay "${OVERLAY_FILE}" \
     "${SIF}" \
     /bin/bash << 'CONTAINER_SCRIPT'

@@ -277,12 +277,12 @@ srun --account=<YOUR_ACCOUNT> --cpus-per-task=4 --mem=32GB \
 # Create overlay filesystem
 cd /scratch/$USER
 mkdir -p instant-policy && cd instant-policy
-cp -rp /scratch/work/public/overlay-fs-ext3/overlay-15GB-500K.ext3.gz .
-gunzip overlay-15GB-500K.ext3.gz
+cp -rp /scratch/work/public/overlay-fs-ext3/overlay-25GB-500K.ext3.gz .
+gunzip overlay-25GB-500K.ext3.gz
 
 # Launch container
-singularity exec --nv \
-    --overlay overlay-15GB-500K.ext3 \
+singularity exec --nv --fakeroot \
+    --overlay overlay-25GB-500K.ext3:rw \
     /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif \
     /bin/bash
 ```
@@ -398,8 +398,8 @@ scancel <JOB_ID>                                       # Cancel job
 srun --account=<YOUR_ACCOUNT> --gres=gpu:1 --cpus-per-task=4 \
      --mem=32GB --time=01:00:00 --pty /bin/bash
 
-singularity exec --nv \
-    --overlay /scratch/$USER/instant-policy/overlay-15GB-500K.ext3:ro \
+singularity exec --nv --fakeroot \
+    --overlay /scratch/$USER/instant-policy/overlay-25GB-500K.ext3:rw \
     /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif \
     /bin/bash
 
