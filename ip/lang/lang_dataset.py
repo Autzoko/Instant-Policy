@@ -217,9 +217,13 @@ def collect_rlbench_lang_data(save_dir: str,
         os.makedirs(task_dir, exist_ok=True)
 
         try:
-            task = env.get_task(
-                __import__('rlbench.tasks', fromlist=[task_name])
-            )
+            # Convert snake_case task name to CamelCase class name
+            # e.g. 'close_microwave' -> 'CloseMicrowave'
+            class_name = ''.join(w.capitalize() for w in task_name.split('_'))
+            task_module = __import__(f'rlbench.tasks.{task_name}',
+                                     fromlist=[class_name])
+            task_class = getattr(task_module, class_name)
+            task = env.get_task(task_class)
         except Exception as e:
             print(f"Skipping {task_name}: {e}")
             continue
