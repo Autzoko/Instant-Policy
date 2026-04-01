@@ -30,6 +30,14 @@ conda activate ip_env
 echo "[1/4] Installing sentence-transformers..."
 pip install -q sentence-transformers==3.0.1 transformers==4.42.4
 
+# Force NVIDIA GPU rendering instead of Mesa software renderer
+export __NV_PRIME_RENDER_OFFLOAD=1
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+export MESA_GL_VERSION_OVERRIDE=3.3
+# Remove Mesa's swrast so CoppeliaSim doesn't try to use it
+export LIBGL_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
+export NVIDIA_DRIVER_CAPABILITIES=all
+
 # Start virtual display
 echo "[2/4] Starting virtual display..."
 Xvfb :1 -screen 0 1280x1024x24 &
