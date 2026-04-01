@@ -30,26 +30,25 @@ conda activate ip_env
 echo "[1/4] Installing sentence-transformers..."
 pip install -q sentence-transformers==3.0.1 transformers==4.42.4
 
-# Force NVIDIA GPU rendering instead of Mesa software renderer
-export __NV_PRIME_RENDER_OFFLOAD=1
-export __GLX_VENDOR_LIBRARY_NAME=nvidia
-export MESA_GL_VERSION_OVERRIDE=3.3
-# Remove Mesa's swrast so CoppeliaSim doesn't try to use it
-export LIBGL_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
-export NVIDIA_DRIVER_CAPABILITIES=all
-
-# Start virtual display
-echo "[2/4] Starting virtual display..."
-Xvfb :1 -screen 0 1280x1024x24 &
-XVFB_PID=$!
-export DISPLAY=:1
-sleep 2
-
-if ! kill -0 $XVFB_PID 2>/dev/null; then
-    echo "[ERROR] Xvfb failed to start"
-    exit 1
+# Display setup
+echo "[2/4] Setting up display..."
+if [ -n "$DISPLAY" ]; then
+    # DISPLAY already set (e.g. shared from host via -e DISPLAY=:0)
+    # Use the host's X server with GPU OpenGL — do NOT start Xvfb
+    echo "  Using host display: $DISPLAY"
+else
+    # No display available — start Xvfb (software rendering, may not work
+    # with CoppeliaSim if no Mesa OpenGL drivers are present)
+    Xvfb :1 -screen 0 1280x1024x24 &
+    XVFB_PID=$!
+    export DISPLAY=:1
+    sleep 2
+    if ! kill -0 $XVFB_PID 2>/dev/null; then
+        echo "[ERROR] Xvfb failed to start"
+        exit 1
+    fi
+    echo "  Xvfb started (PID=$XVFB_PID)"
 fi
-echo "  Xvfb started (PID=$XVFB_PID)"
 
 # Collect data
 echo "[3/4] Collecting demonstrations (20 per task, 24 tasks)..."
