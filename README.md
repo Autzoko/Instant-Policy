@@ -3,7 +3,9 @@
 Code for the paper: "Instant Policy: In-Context Imitation Learning via Graph Diffusion",
 [Project Webpage](https://www.robot-learning.uk/instant-policy)
 
-**Extended with language-guided modality transfer** (Appendix J): use natural language descriptions instead of demonstrations to control the robot.
+**Extended with:**
+- Language-guided modality transfer (Appendix J)
+- **Bimanual (dual-arm) manipulation** via cross-arm heterogeneous graph edges
 
 <p align="center">
 <img src="./media/rollout_roll.gif" alt="drawing" width="700"/>
@@ -31,16 +33,31 @@ instant_policy/
 │   ├── dataset.py                  # Datasets: pseudo-demo / RLBench
 │   ├── train.py                    # Two-phase training pipeline
 │   ├── deploy_lang.py              # Language-guided deployment
-│   └── lang/                       # Language transfer module (Appendix J)
-│       ├── encoder.py              # Sentence-BERT + projection MLP
-│       ├── phi_lang.py             # φ_lang: language-conditioned graph transformer
-│       ├── lang_dataset.py         # Language-annotated dataset + RLBench collector
-│       └── train_lang.py           # Contrastive + MSE bottleneck alignment training
+│   ├── lang/                       # Language transfer module (Appendix J)
+│   │   ├── encoder.py              # Sentence-BERT + projection MLP
+│   │   ├── phi_lang.py             # φ_lang: language-conditioned graph transformer
+│   │   ├── lang_dataset.py         # Language-annotated dataset + RLBench collector
+│   │   └── train_lang.py           # Contrastive + MSE bottleneck alignment training
+│   │
+│   └── bimanual/                   # Bimanual (dual-arm) extension
+│       ├── config.py               # BimanualIPConfig (cross-arm edge toggles)
+│       ├── graph_builder.py        # Bimanual local / context / action graph builders
+│       ├── networks.py             # BimanualSigma/Phi/PsiNetwork
+│       ├── model.py                # BimanualGraphDiffusionPolicy
+│       ├── pseudo_demo.py          # Dual-arm pseudo-demo generation
+│       ├── dataset.py              # BimanualPseudoDemoDataset + PerAct2Dataset
+│       └── train.py                # Bimanual training pipeline
+│
+├── scripts/
+│   └── collect_bimanual_demos.py   # Collect PerAct2 bimanual demonstrations
 │
 ├── hpc/                            # NYU HPC / SLURM deployment scripts
 │   ├── setup_overlay.sh            # One-time environment setup (Micromamba)
+│   ├── setup_peract2.sh            # Install PerAct2 bimanual RLBench fork
 │   ├── train_phase1.sbatch         # Phase 1: geometry encoder pre-training
-│   ├── train_phase2.sbatch         # Phase 2: full model training
+│   ├── train_phase2.sbatch         # Phase 2: single-arm model training
+│   ├── train_bimanual_phase2.sbatch# Phase 2: bimanual model training
+│   ├── collect_peract2_data.sbatch # Collect PerAct2 bimanual demos
 │   ├── collect_lang_data.sbatch    # Collect RLBench language-annotated data
 │   ├── train_phase3.sbatch         # Phase 3: language transfer training
 │   ├── submit_single.sbatch        # Submit single task evaluation
@@ -53,281 +70,99 @@ instant_policy/
 └── download_weights.sh             # Download pre-trained weights
 ```
 
-## Setup
-
-### Option A: pip install (recommended)
-
-> **Important:** PyTorch 2.2.0 requires Python 3.10 or 3.11. It does NOT support Python 3.13+.
-> Always specify `python=3.10` when creating the conda environment.
-
-```bash
-git clone https://github.com/Autzoko/Instant-Policy.git
-cd Instant-Policy
-
-# Create conda environment — MUST specify python=3.10
-conda create -n ip_env python=3.10 -y
-conda activate ip_env
-
-# PyTorch + CUDA 11.8 via pip (more reliable than conda)
-pip install torch==2.2.0 torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu118
-
-# PyTorch Geometric + extensions
-pip install torch-geometric==2.5.0
-pip install torch-scatter torch-cluster torch-sparse \
-    -f https://data.pyg.org/whl/torch-2.2.0%2Bcu118.html
-
-# Remaining dependencies
-pip install open3d==0.18.0 sentence-transformers \
-    numpy==1.26.4 scipy scikit-learn \
-    diffusers==0.31.0 transformers==4.46.2 \
-    trimesh pyquaternion tqdm pillow \
-    wandb gdown matplotlib plotly
-
-# Verify
-python -c "
-import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}')
-print(f'GPU available: {torch.cuda.is_available()}')
-import torch_scatter; print('scatter OK')
-import torch_geometric; print(f'PyG {torch_geometric.__version__}')
-import open3d; print(f'Open3D {open3d.__version__}')
-from sentence_transformers import SentenceTransformer; print('SBERT OK')
-"
-```
-
-> **Note:** `pyg-lib` is optional. If it fails to install, skip it — only `torch-scatter`
-> and `torch-cluster` are required. Use `%2B` instead of `+` in wheel URLs if you
-> see "no matching distribution" errors.
-
-### Option B: conda install (alternative)
-
-```bash
-conda create -n ip_env python=3.10 -y
-conda activate ip_env
-
-conda install pytorch==2.2.0 torchvision torchaudio pytorch-cuda=11.8 \
-    -c pytorch -c nvidia -y
-conda install pyg==2.5.0 pytorch-scatter pytorch-cluster \
-    -c pyg -c pytorch -c nvidia -y
-conda install numpy==1.26.4 scipy scikit-learn pytorch-lightning -c conda-forge -y
-
-pip install open3d==0.18.0 sentence-transformers diffusers==0.31.0 \
-    transformers==4.46.2 trimesh pyquaternion wandb gdown
-```
-
-### Option C: Docker
-
-```bash
-docker build -t instant-policy .
-docker run --gpus all -it -v $(pwd):/workspace instant-policy bash
-
-# Inside container:
-source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env
-pip install sentence-transformers
-cd /workspace
-```
-
-### Option D: NYU HPC (Greene / Torch clusters)
-
-See [HPC Deployment](#hpc-deployment) section below.
+---
 
 ## Quick Start: Pre-trained Model (Inference Only)
 
 ```bash
-# Download pre-trained weights
 ./download_weights.sh
-
-# Run RLBench simulation evaluation
 python deploy_sim.py --task_name='plate_out' --num_demos=2 --num_rollouts=10
 ```
 
-## Training from Scratch
+---
 
-Training has three phases. Each phase depends on the previous one.
+## Single-Arm Training
 
-```
-Phase 1: Geometry encoder    ──→  checkpoints_ip/geo_encoder.pt     (~2-4 hours)
-    ↓
-Phase 2: Full IP model       ──→  checkpoints_ip/model_final.pt     (~5 days)
-    ↓
-Phase 3: Language transfer   ──→  checkpoints_lang/phi_lang_final.pt (~6-12 hours)
-```
+### Environment Setup
 
-**Data requirements:**
-- Phase 1+2: [ShapeNet](https://shapenet.org/) (ShapeNetCore.v2, ~30GB, requires registration)
-- Phase 3: [RLBench](https://sites.google.com/view/rlbench) demonstrations (collected automatically, requires CoppeliaSim)
-
-### Data Preparation
-
-#### ShapeNet (Phase 1+2)
-
-ShapeNet provides 3D object meshes used to generate pseudo-demonstrations. Registration is required.
-
-1. Go to https://shapenet.org/ and create an account
-2. After approval (may take 1-2 days), go to **Downloads** and download **ShapeNetCore.v2**
-3. You will get `ShapeNetCore.v2.zip` (~30GB)
+> Python 3.10 is required (PyTorch 2.2.0 does not support 3.12+).
 
 ```bash
-# Local machine or HPC
-cd /path/to/data   # e.g. /scratch/$USER on HPC
-wget <download_url_from_shapenet>   # or upload via scp
-unzip ShapeNetCore.v2.zip
-
-# Verify — should see category folders with .obj meshes inside
-ls ShapeNetCore.v2/
-# 02691156/  02828884/  02876657/  ... (~55 categories)
-
-find ShapeNetCore.v2/ -name "*.obj" | head -5
-# ShapeNetCore.v2/02691156/1a04e3eab45ca15dd86060f189eb133/model.obj
-# ...
-```
-
-The directory structure looks like:
-```
-ShapeNetCore.v2/
-├── 02691156/               # airplane
-│   ├── 1a04e3eab45ca15d.../
-│   │   └── models/
-│   │       └── model_normalized.obj
-│   └── ...
-├── 02828884/               # bench
-├── 02876657/               # bottle
-├── 03001627/               # chair
-├── 03046257/               # clock
-├── 03790512/               # motorbike
-├── 04256520/               # sofa
-├── 04379243/               # table
-└── ...                     # ~55 categories, ~51K objects total
-```
-
-#### RLBench + CoppeliaSim (Phase 3)
-
-RLBench provides robot manipulation tasks with language descriptions. It requires CoppeliaSim (robot simulator) as a backend.
-
-**Step 1: Install CoppeliaSim**
-
-```bash
-# Download CoppeliaSim V4.1.0 (must match RLBench requirements)
-cd /path/to/tools
-wget https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
-tar xf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
-
-# Set environment variables (add to .bashrc or env.sh)
-export COPPELIASIM_ROOT=/path/to/tools/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04
-export LD_LIBRARY_PATH=$COPPELIASIM_ROOT:$LD_LIBRARY_PATH
-export QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT
-```
-
-**Step 2: Install PyRep + RLBench**
-
-```bash
+conda create -n ip_env python=3.10 -y
 conda activate ip_env
 
-# PyRep (Python bindings for CoppeliaSim)
-cd /tmp && git clone https://github.com/stepjam/PyRep.git
-cd PyRep && pip install -r requirements.txt && pip install .
+# PyTorch + CUDA 11.8
+conda install pytorch==2.2.0 torchvision torchaudio pytorch-cuda=11.8 \
+    -c pytorch -c nvidia -y
 
-# RLBench
-pip install git+https://github.com/stepjam/RLBench.git
+# PyTorch Geometric
+conda install pyg==2.5.0 pytorch-scatter pytorch-cluster \
+    -c pyg -c pytorch -c nvidia -y
+
+# Scientific stack
+conda install numpy==1.26.4 scipy scikit-learn pyyaml tqdm pillow -c conda-forge -y
+
+# Pip packages
+pip install open3d==0.18.0 trimesh pyquaternion sentence-transformers \
+    diffusers==0.31.0 transformers==4.46.2 accelerate wandb gdown
+
+# pyg-lib (optional, skip if it fails)
+pip install pyg-lib -f https://data.pyg.org/whl/torch-2.2.0+cu118.html
 ```
 
-**Step 3: Collect language-annotated demonstrations**
+Verify:
 
 ```bash
-cd /path/to/instant_policy
-
 python -c "
-from ip.lang.lang_dataset import collect_rlbench_lang_data
-collect_rlbench_lang_data(
-    save_dir='./lang_data',
-    demos_per_task=20,
-    headless=True
-)
+import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}')
+print(f'GPU: {torch.cuda.get_device_name(0)}')
+from ip import IPConfig, GraphDiffusionPolicy; print('Single-arm model OK')
 "
 ```
 
-This runs CoppeliaSim in headless mode, collects 20 successful demonstrations per task, and saves them as `.npz` files with point clouds, gripper poses, and gripper states. Each task's language description (e.g. "close the microwave") is mapped via the built-in task description dictionary.
+### Data: ShapeNet
 
-Output structure:
-```
-lang_data/
-├── close_microwave/
-│   ├── demo_0.npz        # Each .npz contains: pcds, T_w_es, grips
-│   ├── demo_1.npz
-│   └── ... (20 files)
-├── open_box/
-│   └── ...
-├── push_button/
-│   └── ...
-└── ... (24 task directories, ~2GB total)
-```
+Download [ShapeNetCore.v2](https://shapenet.org/) (~30GB, registration required). The directory should contain category folders (e.g. `02691156/`, `03001627/`, ...) with `.obj` meshes inside.
 
-> **Note for HPC:** RLBench requires a virtual display (Xvfb). On HPC, either:
-> - Install CoppeliaSim inside the Singularity overlay and use `Xvfb :99 &; export DISPLAY=:99`
-> - Or collect data on a local machine with Docker and upload to HPC:
->   ```bash
->   # Collect locally with Docker
->   docker build -t instant-policy .
->   docker run --gpus all -v $(pwd):/workspace instant-policy bash -c "
->   source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
->   Xvfb :99 -screen 0 1280x1024x24 & export DISPLAY=:99 && \
->   cd /workspace && python -c \"
->   from ip.lang.lang_dataset import collect_rlbench_lang_data
->   collect_rlbench_lang_data('./lang_data', demos_per_task=20, headless=True)
->   \"
->   "
->
->   # Upload to HPC
->   rsync -avz lang_data/ $USER@greene.hpc.nyu.edu:~/instant_policy/lang_data/
->   ```
-
-### Phase 1: Pre-train Geometry Encoder
-
-Pre-train the PointNet++ geometry encoder as an occupancy network on ShapeNet objects.
+### Phase 1: Geometry Encoder (~2-4 hours)
 
 ```bash
-# Download ShapeNet: https://shapenet.org/ (ShapeNetCore.v2)
-# Extract to e.g. /data/ShapeNetCore.v2/
-
 python -m ip.train \
-    --shapenet_root /data/ShapeNetCore.v2 \
+    --shapenet_root /path/to/ShapeNet \
     --save_dir ./checkpoints_ip \
     --phase 1 \
     --device cuda
 ```
 
-This saves `./checkpoints_ip/geo_encoder.pt`. Takes ~2-4 hours on a single GPU.
+Output: `checkpoints_ip/geo_encoder.pt`
 
-### Phase 2: Train Graph Diffusion Model
-
-Train the full σ → φ → ψ pipeline on pseudo-demonstrations.
+### Phase 2: Full Model (~5 days)
 
 ```bash
 python -m ip.train \
-    --shapenet_root /data/ShapeNetCore.v2 \
+    --shapenet_root /path/to/ShapeNet \
     --save_dir ./checkpoints_ip \
     --encoder_ckpt ./checkpoints_ip/geo_encoder.pt \
     --phase 2 \
     --device cuda
 ```
 
-Training parameters (Appendix E):
-- AdamW, lr=1e-5, weight_decay=1e-4
-- 2.5M steps + 50K cosine cooldown
-- float16 mixed precision
-- ~5 days on a single RTX 3080-ti
+Resume: `--resume ./checkpoints_ip/model_step100000.pt`
 
-Checkpoints saved every 10K steps. Resume with `--resume ./checkpoints_ip/model_step100000.pt`.
+Output: `checkpoints_ip/model_final.pt`
 
-### Phase 3: Train Language Transfer Module
+### Phase 3: Language Transfer (~6-12 hours)
 
-Train φ_lang to replace demonstrations with language commands.
-
-Requires the `lang_data/` directory from the [Data Preparation](#data-preparation) step above.
-
-**Train φ_lang:**
+Requires CoppeliaSim + RLBench. See [CoppeliaSim Setup](#coppelasim-setup-for-rlbench--peract2).
 
 ```bash
+# Collect language-annotated demos first
+python -c "
+from ip.lang.lang_dataset import collect_rlbench_lang_data
+collect_rlbench_lang_data('./lang_data', demos_per_task=20, headless=True)
+"
+
+# Train
 python -m ip.lang.train_lang \
     --ip_checkpoint ./checkpoints_ip/model_final.pt \
     --data_dir ./lang_data \
@@ -335,246 +170,273 @@ python -m ip.lang.train_lang \
     --device cuda
 ```
 
-Training parameters:
-- Only φ_lang parameters trained (~45M); IP model fully frozen
-- AdamW, lr=1e-4
-- ~100K steps
-- Loss: InfoNCE contrastive + MSE bottleneck alignment
+---
 
-### Language-Guided Deployment
+## Bimanual (Dual-Arm) Training
 
-After training, use natural language instead of demonstrations:
+The bimanual extension adds cross-arm coordination edges to the heterogeneous graph at all three levels (sigma/phi/psi). No existing single-arm code is modified.
 
-```bash
-python -m ip.deploy_lang \
-    --ip_checkpoint ./checkpoints_ip/model_final.pt \
-    --lang_checkpoint ./checkpoints_lang/phi_lang_final.pt \
-    --task "close the microwave"
-```
+### Environment Setup
 
-In code:
-
-```python
-from ip.deploy_lang import LanguageGuidedPolicy
-
-policy = LanguageGuidedPolicy(
-    ip_checkpoint='./checkpoints_ip/model_final.pt',
-    lang_checkpoint='./checkpoints_lang/phi_lang_final.pt',
-    device='cuda'
-)
-
-# No demonstrations needed — just language + current observation
-actions, grips = policy.predict_actions(
-    task_description="close the microwave",
-    pcd=current_point_cloud,    # (N, 3) segmented point cloud, world frame
-    T_w_e=gripper_pose,         # (4, 4) end-effector pose
-    grip=1,                     # 0=closed, 1=open
-)
-# actions: (8, 4, 4) relative SE(3) transforms
-# grips:   (8,) gripper commands (0=close, 1=open)
-```
-
-## HPC Deployment
-
-### NYU HPC Setup (Greene / Torch)
-
-**1. Build the Singularity overlay (one-time)**
+Same as single-arm — no additional dependencies required.
 
 ```bash
-# On the HPC, get a compute node first (local SSD makes installs much faster)
-srun --account=<YOUR_ACCOUNT> --cpus-per-task=4 --mem=32GB \
-     --time=02:00:00 --pty /bin/bash
-
-# Create overlay filesystem
-cd /scratch/$USER
-mkdir -p instant-policy && cd instant-policy
-cp -rp /scratch/work/public/overlay-fs-ext3/overlay-25GB-500K.ext3.gz .
-gunzip overlay-25GB-500K.ext3.gz
-
-# Launch container
-singularity exec --nv --fakeroot \
-    --overlay overlay-25GB-500K.ext3:rw \
-    /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif \
-    /bin/bash
-```
-
-Inside the container, install Miniconda and all packages:
-
-```bash
-# Install Miniconda to /tmp first (fast local SSD), then copy to overlay
-# IMPORTANT: use the py310 version, NOT "latest" (which defaults to Python 3.13)
-wget -q https://repo.anaconda.com/miniconda/Miniconda3-py310_24.1.2-0-Linux-x86_64.sh
-bash Miniconda3-py310_24.1.2-0-Linux-x86_64.sh -b -p /tmp/miniconda3
-cp -a /tmp/miniconda3 /ext3/miniconda3
-rm -rf /tmp/miniconda3 Miniconda3-py310_24.1.2-0-Linux-x86_64.sh
-
-# Create activation script
-cat > /ext3/env.sh << 'EOF'
-#!/bin/bash
-export PATH=/ext3/miniconda3/bin:$PATH
-source /ext3/miniconda3/etc/profile.d/conda.sh
-EOF
-
-source /ext3/env.sh
-
-# Create environment — MUST specify python=3.10
-conda create -n ip_env python=3.10 -y
+# Verify bimanual imports
 conda activate ip_env
-
-# Install everything via pip (faster and more reliable than conda for PyTorch)
-pip install torch==2.2.0 torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu118
-
-pip install torch-geometric==2.5.0
-pip install torch-scatter torch-cluster torch-sparse \
-    -f https://data.pyg.org/whl/torch-2.2.0%2Bcu118.html
-
-pip install open3d==0.18.0 sentence-transformers \
-    numpy==1.26.4 scipy scikit-learn \
-    diffusers==0.31.0 transformers==4.46.2 \
-    trimesh pyquaternion tqdm wandb gdown
-
-# Verify installation
 python -c "
-import torch
-print(f'PyTorch: {torch.__version__}, CUDA: {torch.version.cuda}')
-print(f'GPU available: {torch.cuda.is_available()}')
-import torch_scatter; print('scatter OK')
-import torch_geometric; print(f'PyG: {torch_geometric.__version__}')
-import open3d; print(f'Open3D: {open3d.__version__}')
-from sentence_transformers import SentenceTransformer; print('SBERT OK')
+from ip.bimanual import BimanualIPConfig, BimanualGraphDiffusionPolicy
+cfg = BimanualIPConfig()
+model = BimanualGraphDiffusionPolicy(cfg)
+total = sum(p.numel() for p in model.parameters())
+print(f'Bimanual model: {total:,} params — OK')
 "
-
-# Exit container
-exit
 ```
 
-**2. Upload project code**
+### Phase 1: Geometry Encoder (shared with single-arm)
+
+The geometry encoder is task-agnostic — reuse the same `geo_encoder.pt` from single-arm training. If you have already trained it, skip this step.
 
 ```bash
-# From your local machine:
-rsync -avz --exclude='*.tar.gz' --exclude='*.pdf' --exclude='*.so' \
-    --exclude='__pycache__' --exclude='checkpoints/' \
-    . $USER@greene.hpc.nyu.edu:~/instant_policy/
-```
-
-**3. Download ShapeNet on the HPC**
-
-```bash
-# ShapeNet requires registration: https://shapenet.org/
-# After getting access, download ShapeNetCore.v2 to /scratch/$USER/
-```
-
-**4. Submit training jobs**
-
-Edit all sbatch files to set your account:
-
-```bash
-cd ~/instant_policy
-sed -i 's/<YOUR_ACCOUNT>/your_actual_account/g' hpc/*.sbatch
-```
-
-Submit each phase sequentially:
-
-```bash
-# Phase 1: Geometry encoder (~2-4h, 1 GPU)
-sbatch hpc/train_phase1.sbatch
-
-# After Phase 1 completes — Phase 2: Full model (~5 days)
-sbatch hpc/train_phase2.sbatch
-
-# Resume Phase 2 if preempted:
-RESUME=./checkpoints_ip/model_step500000.pt sbatch hpc/train_phase2.sbatch
-
-# After Phase 2 completes — Collect RLBench data (requires CoppeliaSim)
-sbatch hpc/collect_lang_data.sbatch
-
-# After data collection — Phase 3: Language transfer (~6-12h)
-sbatch hpc/train_phase3.sbatch
-```
-
-**5. Monitor jobs**
-
-```bash
-squeue -u $USER                                        # Job status
-tail -f ~/instant_policy/logs/phase2_*.out             # Training log
-sacct -j <JOB_ID> --format=JobID,State,Elapsed,MaxRSS  # Resource usage
-scancel <JOB_ID>                                       # Cancel job
-```
-
-**6. Verify results**
-
-```bash
-# Get interactive GPU node
-srun --account=<YOUR_ACCOUNT> --gres=gpu:1 --cpus-per-task=4 \
-     --mem=32GB --time=01:00:00 --pty /bin/bash
-
-singularity exec --nv --fakeroot \
-    --overlay /scratch/$USER/instant-policy/overlay-25GB-500K.ext3:rw \
-    /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif \
-    /bin/bash
-
-source /ext3/env.sh && conda activate ip_env
-cd ~/instant_policy
-
-python -m ip.deploy_lang \
-    --ip_checkpoint ./checkpoints_ip/model_final.pt \
-    --lang_checkpoint ./checkpoints_lang/phi_lang_final.pt \
-    --task "close the microwave" \
+python -m ip.train \
+    --shapenet_root /path/to/ShapeNet \
+    --save_dir ./checkpoints_ip \
+    --phase 1 \
     --device cuda
 ```
 
-### Generic Server (non-HPC)
+### Phase 2: Bimanual Model (~5-7 days)
+
+This is the main training phase. It uses **ShapeNet pseudo-demonstrations** generated on-the-fly (no PerAct2 data needed yet).
 
 ```bash
-# With Docker:
-docker build -t instant-policy .
-docker run --gpus all -d --name ip-train \
-    -v /data/ShapeNetCore.v2:/data/ShapeNet \
-    -v $(pwd):/workspace \
-    instant-policy bash -c "
-source /opt/conda/etc/profile.d/conda.sh && conda activate ip_env && \
-pip install sentence-transformers && \
-cd /workspace && \
-python -m ip.train --shapenet_root /data/ShapeNet --save_dir ./checkpoints_ip --device cuda
-"
-
-# Monitor:
-docker logs -f ip-train
-
-# Without Docker (bare metal):
-conda activate ip_env
-python -m ip.train --shapenet_root /path/to/ShapeNet --save_dir ./checkpoints_ip --device cuda
+python -m ip.bimanual.train \
+    --shapenet_root /path/to/ShapeNet \
+    --save_dir ./checkpoints_bimanual \
+    --encoder_ckpt ./checkpoints_ip/geo_encoder.pt \
+    --phase 2 \
+    --device cuda
 ```
 
-## Deploy on Your Robot
+Run in background (prevents SSH disconnect from killing training):
 
-Collect demonstrations as `demo = {'pcds': [], 'T_w_es': [], 'grips': []}` where:
-- `pcds`: list of segmented point clouds (numpy arrays, world frame)
-- `T_w_es`: list of end-effector poses (4x4 numpy arrays, world frame)
-- `grips`: list of gripper states (0=closed, 1=open)
+```bash
+mkdir -p logs
+nohup python -m ip.bimanual.train \
+    --shapenet_root /path/to/ShapeNet \
+    --save_dir ./checkpoints_bimanual \
+    --encoder_ckpt ./checkpoints_ip/geo_encoder.pt \
+    --phase 2 \
+    --device cuda \
+    > logs/bimanual_phase2.log 2>&1 &
 
-For the original pre-trained model, see `deploy.py`. For language-guided control, see above.
+echo "PID: $!"
+```
 
-## Notes on Performance
+Monitor:
 
-- Objects of interest should be well segmented.
-- Tasks should follow the Markovian assumption (no observation history).
-- Demonstrations should be short and consistent.
-- Model uses point clouds in the end-effector frame.
-- To avoid gripper oscillation, execute until gripper state changes then re-query.
+```bash
+tail -f logs/bimanual_phase2.log     # training loss
+watch -n 10 nvidia-smi               # GPU usage
+```
+
+Resume from checkpoint:
+
+```bash
+python -m ip.bimanual.train \
+    --shapenet_root /path/to/ShapeNet \
+    --save_dir ./checkpoints_bimanual \
+    --encoder_ckpt ./checkpoints_ip/geo_encoder.pt \
+    --phase 2 \
+    --device cuda \
+    --resume ./checkpoints_bimanual/bimanual_step100000.pt
+```
+
+Ablation flags:
+
+| Flag | Effect |
+|------|--------|
+| `--no_coordinate_edges` | Disable cross-arm edges in sigma (local subgraph) |
+| `--no_bimanual_edges` | Disable cross-arm edges in phi (context graph) |
+| `--no_sync_edges` | Disable cross-arm edges in psi (action graph) |
+| `--scene_frame world` | Use world frame instead of midpoint frame for scene encoding |
+
+Output: `checkpoints_bimanual/bimanual_final.pt` (checkpoint every 10K steps)
+
+### Collecting PerAct2 Data (for fine-tuning / evaluation)
+
+PerAct2 bimanual demonstrations are used for fine-tuning or evaluating the trained model on specific bimanual tasks. This requires CoppeliaSim.
+
+#### CoppeliaSim Setup (for RLBench / PerAct2)
+
+```bash
+# Download CoppeliaSim V4.1.0
+cd /path/to/tools
+wget https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
+tar xf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
+
+# Add to ~/.bashrc
+export COPPELIASIM_ROOT=/path/to/tools/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04
+export LD_LIBRARY_PATH=$COPPELIASIM_ROOT:$LD_LIBRARY_PATH
+export QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT
+```
+
+#### Install PyRep + PerAct2 RLBench Fork
+
+```bash
+conda activate ip_env
+
+# PyRep
+cd /tmp && git clone https://github.com/stepjam/PyRep.git
+cd PyRep && pip install -r requirements.txt && pip install . && cd ..
+
+# PerAct2's bimanual RLBench fork
+git clone https://github.com/markusgrotz/RLBench.git
+cd RLBench && pip install -e . && cd ..
+```
+
+#### Collect Bimanual Demonstrations
+
+```bash
+# Start virtual display (if headless server)
+Xvfb :99 -screen 0 1280x1024x24 &
+export DISPLAY=:99
+
+cd /path/to/Instant-Policy
+
+# Collect 20 episodes for all 13 bimanual tasks
+python scripts/collect_bimanual_demos.py \
+    --save_dir ./peract2_data \
+    --num_episodes 20
+
+# Or collect specific tasks only
+python scripts/collect_bimanual_demos.py \
+    --save_dir ./peract2_data \
+    --num_episodes 20 \
+    --tasks coordinated_push_box coordinated_lift_tray handover_item
+```
+
+Output:
+
+```
+peract2_data/
+├── coordinated_push_box/
+│   ├── episode_0000.npz      # pcds, T_w_es_left, T_w_es_right, grips_left, grips_right
+│   ├── episode_0001.npz
+│   └── ...
+├── coordinated_lift_tray/
+│   └── ...
+└── ... (13 bimanual tasks)
+```
+
+### Testing / Inference
+
+After training completes, test the bimanual model:
+
+```python
+import torch
+from ip.bimanual import BimanualIPConfig, BimanualGraphDiffusionPolicy
+
+# Load model
+cfg = BimanualIPConfig()
+model = BimanualGraphDiffusionPolicy(cfg).cuda()
+ckpt = torch.load('./checkpoints_bimanual/bimanual_final.pt')
+model.load_state_dict(ckpt['model'])
+model.eval()
+
+# Prepare input: demonstrations + current observation
+sample = {
+    'demos': [
+        {
+            'pcds': [pcd_wp0, pcd_wp1, ...],           # list of (2048, 3) tensors
+            'T_w_es_left':  [T_l_wp0, T_l_wp1, ...],   # list of (4, 4) tensors
+            'T_w_es_right': [T_r_wp0, T_r_wp1, ...],   # list of (4, 4) tensors
+            'grips_left':   [1, 0, 0, ...],             # list of int (0=closed, 1=open)
+            'grips_right':  [1, 1, 0, ...],
+        },
+        # ... more demos for better in-context learning
+    ],
+    'current': {
+        'pcd': current_pcd,               # (2048, 3) tensor, world frame
+        'T_w_e_left':  current_T_left,    # (4, 4) tensor, left EE pose
+        'T_w_e_right': current_T_right,   # (4, 4) tensor, right EE pose
+        'grip_left': 1,                   # current left gripper state
+        'grip_right': 1,                  # current right gripper state
+    },
+}
+
+# Predict actions for both arms
+actions_left, grips_left, actions_right, grips_right = model.predict_actions(sample)
+# actions_left:  (8, 4, 4) — relative SE(3) transforms for left arm
+# grips_left:    (8,)      — gripper commands (0=close, 1=open)
+# actions_right: (8, 4, 4) — relative SE(3) transforms for right arm
+# grips_right:   (8,)      — gripper commands
+```
+
+### Evaluating on PerAct2 Tasks
+
+```python
+from ip.bimanual.dataset import PerAct2Dataset, BimanualIPConfig
+
+# Load PerAct2 demos as evaluation context
+cfg = BimanualIPConfig()
+dataset = PerAct2Dataset(
+    data_dir='./peract2_data',
+    task_names=['coordinated_push_box'],
+    cfg=cfg,
+    data_format='npz',
+)
+
+# Use first few demos as context, predict on the rest
+demo = dataset[0]
+# demo contains: pcds, T_w_es_left, T_w_es_right, grips_left, grips_right
+```
+
+---
+
+## Training Summary
+
+| Phase | Command | Input | Output | Time | GPU Memory |
+|-------|---------|-------|--------|------|------------|
+| Phase 1 (shared) | `python -m ip.train --phase 1` | ShapeNet | `geo_encoder.pt` | 2-4h | ~4 GB |
+| Phase 2 (single-arm) | `python -m ip.train --phase 2` | ShapeNet + Phase 1 | `model_final.pt` | ~5 days | ~10 GB |
+| Phase 2 (bimanual) | `python -m ip.bimanual.train --phase 2` | ShapeNet + Phase 1 | `bimanual_final.pt` | ~7 days | ~18 GB |
+| Phase 3 (language) | `python -m ip.lang.train_lang` | Phase 2 + RLBench | `phi_lang_final.pt` | 6-12h | ~12 GB |
+
+---
+
+## HPC Deployment (NYU Greene)
+
+See `hpc/` directory for SLURM scripts. Key commands:
+
+```bash
+# One-time setup
+bash hpc/setup_overlay.sh
+
+# Single-arm training
+sbatch hpc/train_phase1.sbatch
+sbatch hpc/train_phase2.sbatch
+
+# Bimanual training
+sbatch hpc/train_bimanual_phase2.sbatch
+
+# PerAct2 data collection
+bash hpc/setup_peract2.sh    # install bimanual RLBench fork
+sbatch hpc/collect_peract2_data.sbatch
+```
+
+---
 
 ## Common Issues
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| `No module named 'torch'` | Python version too high (3.13+) | Recreate env with `python=3.10` |
-| `pyg-lib` install fails | Not required for training | Skip it; only `torch-scatter` and `torch-cluster` are needed |
-| `torch-scatter` install fails | PyTorch/CUDA version mismatch in wheel URL | Use `%2B` instead of `+` in URL: `torch-2.2.0%2Bcu118` |
-| Miniconda unpacking slow on HPC | ext3 overlay has slow random I/O | Install to `/tmp` first, then `cp -a` to overlay |
-| Miniconda `latest` installs Python 3.13 | `latest` always gets newest Python | Use pinned version: `Miniconda3-py310_24.1.2-0-Linux-x86_64.sh` |
-| CUDA not available in Singularity | Missing `--nv` flag | Always use `singularity exec --nv` |
-| `conda: No such file or directory` | env.sh path doesn't match install location | Run `find /ext3 -name conda` and fix path in `/ext3/env.sh` |
+| `No module named 'torch'` | Python 3.12+ | Recreate env with `python=3.10` |
+| `torch-scatter` install fails | PyTorch/CUDA mismatch | Use `%2B` instead of `+` in wheel URLs |
+| `pyg-lib` install fails | Not required | Skip it |
+| Training loss stays flat | Missing `geo_encoder.pt` | Run Phase 1 first, check `--encoder_ckpt` path |
+| CUDA OOM on bimanual | Batch too large or too many demos | Reduce `max_demos` in config or use fewer demo waypoints |
+| PerAct2 task not found | Wrong RLBench fork | Install PerAct2's fork: `markusgrotz/RLBench` |
+| `Xvfb` fails | No display for CoppeliaSim | `Xvfb :99 -screen 0 1280x1024x24 & export DISPLAY=:99` |
 
 ## Citing
 
