@@ -184,6 +184,12 @@ def collect_rlbench_lang_data(save_dir: str,
 
     Requires RLBench and CoppeliaSim to be installed.
     """
+    import sys
+    import time
+
+    def log(msg):
+        print(msg, flush=True)
+
     try:
         from rlbench.environment import Environment
         from rlbench.action_modes.action_mode import MoveArmThenGripper
@@ -191,7 +197,7 @@ def collect_rlbench_lang_data(save_dir: str,
         from rlbench.action_modes.gripper_action_modes import Discrete
         from rlbench.observation_config import ObservationConfig
     except ImportError:
-        print("RLBench not installed. Cannot collect demonstrations.")
+        log("RLBench not installed. Cannot collect demonstrations.")
         return
 
     if task_names is None:
@@ -205,16 +211,25 @@ def collect_rlbench_lang_data(save_dir: str,
         gripper_action_mode=Discrete()
     )
 
+    log("Launching CoppeliaSim environment (this may take 1-2 minutes)...")
     env = Environment(
         action_mode=action_mode,
         obs_config=obs_config,
         headless=headless,
     )
     env.launch()
+    log("CoppeliaSim launched successfully.")
 
-    for task_name in task_names:
+    total_tasks = len(task_names)
+    total_demos_saved = 0
+    total_demos_failed = 0
+    start_time = time.time()
+
+    for task_idx, task_name in enumerate(task_names):
         task_dir = os.path.join(save_dir, task_name)
         os.makedirs(task_dir, exist_ok=True)
+
+        log(f"\n[{task_idx+1}/{total_tasks}] Loading task: {task_name}...")
 
         try:
             # Convert snake_case task name to CamelCase class name
@@ -225,12 +240,18 @@ def collect_rlbench_lang_data(save_dir: str,
             task_class = getattr(task_module, class_name)
             task = env.get_task(task_class)
         except Exception as e:
-            print(f"Skipping {task_name}: {e}")
+            log(f"  SKIP: {e}")
             continue
 
         # Get task descriptions
-        descriptions, _ = task.reset()
-        print(f"Task: {task_name} — '{descriptions[0]}'")
+        try:
+            descriptions, _ = task.reset()
+            desc_str = descriptions[0] if descriptions else task_name
+        except Exception as e:
+            log(f"  SKIP (reset failed): {e}")
+            continue
+        log(f"  Description: '{desc_str}'")
+        log(f"  Collecting {demos_per_task} demos...")
 
         for demo_idx in range(demos_per_task):
             try:
@@ -274,10 +295,24 @@ def collect_rlbench_lang_data(save_dir: str,
                                     pcds=np.array(pcds),
                                     T_w_es=np.array(T_w_es),
                                     grips=np.array(grips))
-                print(f"  Saved demo {demo_idx}")
+                total_demos_saved += 1
+                elapsed = time.time() - start_time
+                log(f"  demo {demo_idx+1}/{demos_per_task} saved "
+                    f"({len(demo)} steps) "
+                    f"[total: {total_demos_saved} saved, "
+                    f"{total_demos_failed} failed, "
+                    f"{elapsed:.0f}s elapsed]")
 
             except Exception as e:
-                print(f"  Demo {demo_idx} failed: {e}")
+                total_demos_failed += 1
+                log(f"  demo {demo_idx+1}/{demos_per_task} FAILED: {e}")
 
     env.shutdown()
-    print(f"Data collection complete. Saved to {save_dir}")
+    elapsed = time.time() - start_time
+    log(f"\n{'='*50}")
+    log(f"Data collection complete.")
+    log(f"  Saved: {total_demos_saved} demos")
+    log(f"  Failed: {total_demos_failed} demos")
+    log(f"  Time: {elapsed:.0f}s ({elapsed/60:.1f} min)")
+    log(f"  Output: {save_dir}")
+    log(f"{'='*50}")
