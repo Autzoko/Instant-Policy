@@ -38,11 +38,18 @@ def train_occupancy_network(
     device: str = 'cuda',
 ):
     """
-    Pre-train the geometry encoder φ_e as part of an occupancy network.
+    Pre-train the geometry encoder φ_e as part of an occupancy network
+    (Mescheder et al. 2019, Appendix A).
 
-    Training data: sample objects from ShapeNet, sample query points
-    (50% on surface, 50% random), predict occupancy.
+    For each step:
+      1. Load a random ShapeNet mesh.
+      2. Sample 2048 surface points as encoder input.
+      3. Sample query points: 50% near surface, 50% random in bounding box.
+      4. Compute ground truth occupancy via mesh containment test.
+      5. Train encoder + decoder with BCE loss.
     """
+    import numpy as np
+
     print("=" * 60)
     print("Phase 1: Pre-training Geometry Encoder (Occupancy Network)")
     print("=" * 60)
@@ -52,36 +59,35 @@ def train_occupancy_network(
     optimiser = torch.optim.AdamW(model.parameters(), lr=lr)
     scaler = GradScaler()
 
-    # Simple synthetic data loop (replace with real ShapeNet loader)
-    from .pseudo_demo import load_shapenet_meshes, sample_scene, render_point_clouds
+    from .pseudo_demo import load_shapenet_meshes
 
     mesh_paths = load_shapenet_meshes(shapenet_root, max_objects=50000)
     if not mesh_paths:
         print(f"Warning: No meshes found in {shapenet_root}. "
               "Using random point clouds for demo.")
 
+    print(f"  Loaded {len(mesh_paths)} ShapeNet meshes")
+
+    # Check trimesh availability (needed for proper occupancy)
+    try:
+        import trimesh
+        _has_trimesh = True
+        print("  trimesh available: using mesh-based occupancy ground truth")
+    except ImportError:
+        _has_trimesh = False
+        print("  trimesh not available: using approximate occupancy labels")
+
     model.train()
+    os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+
     for step in range(1, num_steps + 1):
-        # Generate training data
-        if mesh_paths:
-            objects = sample_scene(mesh_paths, num_objects=1)
-            pcd = render_point_clouds(objects, None)
-        else:
-            # Fallback: random shape
-            pcd = _generate_random_shape(2048)
+        # ── 1. Load a random ShapeNet mesh ──────────────────────
+        pcd_np, query_np, gt_np = _sample_occupancy_data(
+            mesh_paths, _has_trimesh, cfg.num_pcd_points)
 
-        pcd_tensor = torch.from_numpy(pcd[:2048]).float().unsqueeze(0).to(device)
-
-        # Sample query points: 50% near surface, 50% random
-        surface_queries = pcd_tensor + torch.randn_like(pcd_tensor) * 0.01
-        random_queries = torch.rand(1, 2048, 3, device=device) * 0.4 - 0.2
-        queries = torch.cat([surface_queries[:, :1024], random_queries[:, :1024]], dim=1)
-
-        # Ground truth: surface queries → 1, random → probably 0
-        gt = torch.cat([
-            torch.ones(1, 1024, 1, device=device),
-            torch.zeros(1, 1024, 1, device=device),
-        ], dim=1)
+        pcd_tensor = torch.from_numpy(pcd_np).float().unsqueeze(0).to(device)
+        queries = torch.from_numpy(query_np).float().unsqueeze(0).to(device)
+        gt = torch.from_numpy(gt_np).float().unsqueeze(0).to(device)
 
         with autocast():
             logits = model(pcd_tensor, queries)
@@ -95,11 +101,99 @@ def train_occupancy_network(
         if step % 1000 == 0:
             print(f"  Step {step}/{num_steps}  Loss: {loss.item():.4f}")
 
-    # Save encoder weights
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        # Save intermediate checkpoint every 25K steps
+        if step % 25_000 == 0:
+            mid_path = save_path.replace('.pt', f'_step{step}.pt')
+            torch.save(model.encoder.state_dict(), mid_path)
+            print(f"  Intermediate checkpoint: {mid_path}")
+
+    # Save final encoder weights
     torch.save(model.encoder.state_dict(), save_path)
     print(f"Geometry encoder saved to {save_path}")
     return model.encoder
+
+
+def _sample_occupancy_data(mesh_paths, has_trimesh, num_pcd_points=2048):
+    """
+    Sample one training example for occupancy pre-training.
+
+    Returns:
+        pcd:     (num_pcd_points, 3)  surface points (encoder input)
+        queries: (2048, 3)            query points (50% surface, 50% random)
+        gt:      (2048, 1)            occupancy labels
+    """
+    import numpy as np
+
+    if not mesh_paths or not has_trimesh:
+        # Skip to fallback
+        pcd = _generate_random_shape(num_pcd_points)
+        surface_queries = pcd[:1024] + np.random.randn(1024, 3).astype(np.float32) * 0.01
+        random_queries = np.random.uniform(-0.2, 0.2, size=(1024, 3)).astype(np.float32)
+        queries = np.concatenate([surface_queries, random_queries], axis=0)
+        gt = np.concatenate([
+            np.ones((1024, 1), dtype=np.float32),
+            np.zeros((1024, 1), dtype=np.float32),
+        ], axis=0)
+        return pcd, queries, gt
+
+    mesh_path = mesh_paths[np.random.randint(len(mesh_paths))]
+
+    if has_trimesh:
+        import trimesh
+        try:
+            mesh = trimesh.load(mesh_path, force='mesh')
+            # Normalise to unit bounding box centered at origin
+            mesh.vertices -= mesh.bounding_box.centroid
+            scale = mesh.bounding_box.extents.max()
+            if scale > 1e-8:
+                mesh.vertices /= scale
+            mesh.vertices *= 0.1  # scale to ~10cm (typical object size)
+
+            # ── Encoder input: 2048 surface points ──
+            pcd = mesh.sample(num_pcd_points).astype(np.float32)
+
+            # ── Query points: 50% near surface, 50% random ──
+            # Surface queries: points on surface + small noise
+            surface_pts = mesh.sample(1024).astype(np.float32)
+            surface_queries = surface_pts + np.random.randn(1024, 3).astype(np.float32) * 0.005
+
+            # Random queries: uniform in bounding box with padding
+            bbox_min = pcd.min(axis=0) - 0.05
+            bbox_max = pcd.max(axis=0) + 0.05
+            random_queries = np.random.uniform(
+                bbox_min, bbox_max, size=(1024, 3)
+            ).astype(np.float32)
+
+            queries = np.concatenate([surface_queries, random_queries], axis=0)
+
+            # ── Ground truth: mesh containment test ──
+            # Mescheder et al. 2019: use mesh to determine inside/outside
+            if mesh.is_watertight:
+                occupancy = mesh.contains(queries).astype(np.float32)
+            else:
+                # Fallback for non-watertight meshes:
+                # surface queries (with small noise) → likely occupied
+                # Use distance-based heuristic
+                closest, dist, _ = trimesh.proximity.closest_point(mesh, queries)
+                occupancy = (dist < 0.008).astype(np.float32)
+
+            gt = occupancy.reshape(-1, 1)
+            return pcd, queries, gt
+
+        except Exception:
+            # Mesh load failed — use fallback for this sample
+            pcd = _generate_random_shape(num_pcd_points)
+            surface_queries = pcd[:1024] + np.random.randn(1024, 3).astype(np.float32) * 0.01
+            random_queries = np.random.uniform(-0.2, 0.2, size=(1024, 3)).astype(np.float32)
+            queries = np.concatenate([surface_queries, random_queries], axis=0)
+            gt = np.concatenate([
+                np.ones((1024, 1), dtype=np.float32),
+                np.zeros((1024, 1), dtype=np.float32),
+            ], axis=0)
+            return pcd, queries, gt
+
+    # Should not reach here (early return above handles no-trimesh case)
+    raise RuntimeError("Unreachable")
 
 
 def _generate_random_shape(n_points: int) -> 'np.ndarray':
