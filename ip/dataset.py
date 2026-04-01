@@ -137,7 +137,8 @@ class PseudoDemoDataset(IterableDataset):
     def mesh_paths(self):
         if self._mesh_paths is None:
             from .pseudo_demo import load_shapenet_meshes
-            self._mesh_paths = load_shapenet_meshes(self.shapenet_root)
+            self._mesh_paths = load_shapenet_meshes(self.shapenet_root,
+                                                       max_objects=50000)
             if not self._mesh_paths:
                 raise RuntimeError(
                     f"No .obj meshes found in {self.shapenet_root}")

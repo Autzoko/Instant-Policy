@@ -55,7 +55,7 @@ def train_occupancy_network(
     # Simple synthetic data loop (replace with real ShapeNet loader)
     from .pseudo_demo import load_shapenet_meshes, sample_scene, render_point_clouds
 
-    mesh_paths = load_shapenet_meshes(shapenet_root)
+    mesh_paths = load_shapenet_meshes(shapenet_root, max_objects=50000)
     if not mesh_paths:
         print(f"Warning: No meshes found in {shapenet_root}. "
               "Using random point clouds for demo.")
