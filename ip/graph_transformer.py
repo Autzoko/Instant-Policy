@@ -79,8 +79,8 @@ class HeteroAttentionLayer(nn.Module):
 
         # Weighted aggregation
         messages = attn.unsqueeze(-1) * v_e        # (E, H, D)
-        # Scatter-add to destination nodes
-        out = torch.zeros(num_dst, H, D, device=q_feat.device, dtype=q_feat.dtype)
+        # Scatter-add to destination nodes (use messages dtype for AMP compat)
+        out = torch.zeros(num_dst, H, D, device=messages.device, dtype=messages.dtype)
         dst_exp = dst_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, H, D)
         out.scatter_add_(0, dst_exp, messages)
         return out.reshape(num_dst, H * D)
