@@ -412,6 +412,7 @@ class BimanualGraphDiffusionPolicy(nn.Module):
         K = c.num_gripper_keypoints
         kp = self.kp
         device = self.device
+        T_pred = batch['actions']['T_EAs_left'].shape[0]  # actual action length
 
         # 1. Process demo + current subgraphs -> bottleneck
         (dg_fl, dg_fr, dg_pl, dg_pr,
@@ -454,7 +455,7 @@ class BimanualGraphDiffusionPolicy(nn.Module):
         action_feats_l_list, action_feats_r_list = [], []
         action_pos_l_list, action_pos_r_list = [], []
 
-        for t in range(c.pred_horizon):
+        for t in range(T_pred):
             # World-frame action poses for this timestep
             T_wa_l = cur_T_we_l @ T_EA_k_l[t]
             T_wa_r = cur_T_we_r @ T_EA_k_r[t]
@@ -506,8 +507,8 @@ class BimanualGraphDiffusionPolicy(nn.Module):
             cur_pl, cur_pr,
             action_pos_l, action_pos_r, k,
         )
-        flow_l = flow_l.reshape(1, c.pred_horizon, K, 7)
-        flow_r = flow_r.reshape(1, c.pred_horizon, K, 7)
+        flow_l = flow_l.reshape(1, T_pred, K, 7)
+        flow_r = flow_r.reshape(1, T_pred, K, 7)
 
         # 6. Compute flow targets (independently per arm)
         flow_target_l = compute_flow_targets(
