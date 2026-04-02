@@ -140,8 +140,12 @@ class BimanualPseudoDemoDataset(IterableDataset):
     def mesh_paths(self):
         if self._mesh_paths is None:
             from ..pseudo_demo import load_shapenet_meshes
+            import time
+            print("  Loading ShapeNet mesh paths (this may take a few minutes)...")
+            t0 = time.time()
             self._mesh_paths = load_shapenet_meshes(self.shapenet_root,
                                                        max_objects=50000)
+            print(f"  Loaded {len(self._mesh_paths)} meshes in {time.time()-t0:.1f}s")
             if not self._mesh_paths:
                 raise RuntimeError(
                     f"No .obj meshes found in {self.shapenet_root}")

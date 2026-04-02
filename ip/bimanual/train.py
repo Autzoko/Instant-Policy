@@ -152,6 +152,7 @@ def train_bimanual_model(
 
     # Dataset — each GPU gets its own independent IterableDataset
     # (pseudo-demos are generated on-the-fly with random seeds)
+    _print_main("Initialising dataset...")
     dataset = BimanualPseudoDemoDataset(shapenet_root, cfg)
     loader = DataLoader(dataset, batch_size=None)
 
@@ -169,11 +170,18 @@ def train_bimanual_model(
     if _is_main():
         os.makedirs(save_dir, exist_ok=True)
 
+    _print_main("Starting training loop...")
+    import time
     running_loss = 0.0
     log_steps = 0
+    step_t0 = time.time()
     for step, batch in enumerate(loader, start=start_step + 1):
         if step > cfg.max_optim_steps:
             break
+
+        # Log first few steps individually so user knows training started
+        if step <= start_step + 3:
+            _print_main(f"  Step {step}: generating batch + forward pass...")
 
         with autocast(enabled=cfg.use_fp16):
             loss = model(batch)
@@ -182,19 +190,27 @@ def train_bimanual_model(
         scaler.scale(loss).backward()
         scaler.unscale_(optimiser)
         torch.nn.utils.clip_grad_norm_(trainable_params_list, cfg.grad_clip)
+        old_scale = scaler.get_scale()
         scaler.step(optimiser)
         scaler.update()
-        scheduler.step()
+        # Only step scheduler when optimizer actually stepped (avoids warning)
+        if old_scale <= scaler.get_scale():
+            scheduler.step()
 
         running_loss += loss.item()
         log_steps += 1
 
+        if step <= start_step + 3:
+            _print_main(f"  Step {step}: loss={loss.item():.4f}  "
+                        f"({time.time()-step_t0:.1f}s)")
+            step_t0 = time.time()
+
         if step % 100 == 0:
             avg_loss = running_loss / max(log_steps, 1)
             lr = optimiser.param_groups[0]['lr']
+            gpu_info = f"  [x{world_size} GPUs]" if distributed else ""
             _print_main(f"  Step {step}/{cfg.max_optim_steps}  "
-                        f"Loss: {avg_loss:.5f}  LR: {lr:.2e}"
-                        f"  [x{world_size} GPUs]" if distributed else "")
+                        f"Loss: {avg_loss:.5f}  LR: {lr:.2e}{gpu_info}")
             running_loss = 0.0
             log_steps = 0
 
