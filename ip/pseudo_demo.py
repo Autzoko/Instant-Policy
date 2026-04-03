@@ -280,6 +280,9 @@ def augment_trajectory(trajectory: List[dict],
 # Point cloud rendering (placeholder using PyRender)
 # ──────────────────────────────────────────────────────────────────────
 
+_mesh_cache: Dict = {}
+
+
 def render_point_clouds(objects: List[dict],
                         T_we: np.ndarray,
                         num_cameras: int = 3,
@@ -299,7 +302,14 @@ def render_point_clouds(objects: List[dict],
         import trimesh
         pcds = []
         for obj in objects:
-            mesh = trimesh.load(obj['mesh_path'], force='mesh')
+            mesh = _load_mesh_cached(obj['mesh_path'])
+            if mesh is None:
+                # Fallback for this object
+                pts = obj['position'] + np.random.randn(1024, 3).astype(np.float32) * obj['scale']
+                pcds.append(pts)
+                continue
+            # Work on a copy so cache is not mutated
+            mesh = mesh.copy()
             # Transform mesh to scene pose
             mesh.apply_scale(obj['scale'])
             T = np.eye(4)
@@ -320,6 +330,42 @@ def render_point_clouds(objects: List[dict],
         pts = obj['position'] + np.random.randn(1024, 3) * obj['scale']
         pcds.append(pts)
     return np.concatenate(pcds, axis=0).astype(np.float32)
+
+
+def _load_mesh_cached(mesh_path: str, cache_size: int = 500):
+    """
+    Load a trimesh mesh with caching and timeout protection.
+    Returns None if loading fails.
+    """
+    global _mesh_cache
+    if mesh_path in _mesh_cache:
+        return _mesh_cache[mesh_path]
+    try:
+        import trimesh
+        import signal
+
+        # Timeout: skip meshes that take > 10 seconds to load
+        def _timeout_handler(signum, frame):
+            raise TimeoutError()
+
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(10)  # 10 second timeout
+        try:
+            mesh = trimesh.load(mesh_path, force='mesh', process=False)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+
+        # Evict oldest if cache full
+        if len(_mesh_cache) >= cache_size:
+            oldest = next(iter(_mesh_cache))
+            del _mesh_cache[oldest]
+        _mesh_cache[mesh_path] = mesh
+        return mesh
+    except Exception:
+        # Mark as failed so we don't retry
+        _mesh_cache[mesh_path] = None
+        return None
 
 
 # ──────────────────────────────────────────────────────────────────────

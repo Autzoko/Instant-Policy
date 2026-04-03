@@ -442,8 +442,12 @@ def generate_bimanual_pseudo_demo_batch(
         context_demos = task_demos[:N - 1]
         target_demo = task_demos[N - 1]
 
+        # Need at least 2 frames (1 current + 1 action)
+        if len(target_demo) < 2:
+            continue
+
         T = min(8, len(target_demo) - 1)
-        obs_idx = np.random.randint(0, len(target_demo) - T)
+        obs_idx = np.random.randint(0, max(1, len(target_demo) - T))
 
         samples.append({
             'demos': [
