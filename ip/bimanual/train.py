@@ -19,7 +19,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 import argparse
 from typing import Optional
 
@@ -148,7 +148,7 @@ def train_bimanual_model(
         return max(0.01, 0.5 * (1.0 + math.cos(progress * math.pi)))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda)
-    scaler = GradScaler(enabled=cfg.use_fp16)
+    scaler = GradScaler('cuda', enabled=cfg.use_fp16)
 
     # Dataset — each GPU gets its own independent IterableDataset
     # (pseudo-demos are generated on-the-fly with random seeds)
@@ -187,7 +187,7 @@ def train_bimanual_model(
         if step <= start_step + 3:
             _print_main(f"  Step {step}: generating batch + forward pass...")
 
-        with autocast(enabled=cfg.use_fp16):
+        with autocast('cuda', enabled=cfg.use_fp16):
             loss = model(batch)
 
         optimiser.zero_grad()
