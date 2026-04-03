@@ -295,17 +295,22 @@ def _interpolate_single_arm(waypoints: List[dict], arm: str,
     slerp = Slerp(t_wp, key_rots)
     dense_rotations = slerp(t_dense)
 
-    # Gripper state
+    # Gripper state — flip at the dense step closest to each grip_change waypoint
     grip_changes = [wp.get(f'grip_change_{arm}', False) for wp in waypoints]
     grip_state = 1  # start open
+
+    # Pre-compute: for each grip_change waypoint, find the nearest dense index
+    flip_at_dense_idx = set()
+    for wp_i, gc in enumerate(grip_changes):
+        if gc:
+            # Find the dense step closest to this waypoint's t parameter
+            nearest_dense = int(np.argmin(np.abs(t_dense - t_wp[wp_i])))
+            flip_at_dense_idx.add(nearest_dense)
+
     grip_states = []
-    last_flipped_wp = -1
-    for i, t in enumerate(t_dense):
-        wp_idx = np.argmin(np.abs(t_wp - t))
-        if (grip_changes[wp_idx] and wp_idx != last_flipped_wp
-                and abs(t - t_wp[wp_idx]) < 0.01):
+    for i in range(num_steps):
+        if i in flip_at_dense_idx:
             grip_state = 1 - grip_state
-            last_flipped_wp = wp_idx
         grip_states.append(grip_state)
 
     trajectory = []
