@@ -397,7 +397,7 @@ def generate_pseudo_task(mesh_paths: List[str],
         objects = []
         for obj in base_objects:
             new_obj = dict(obj)
-            new_obj['position'] = obj['position'] + np.random.randn(3) * 0.02
+            new_obj['position'] = obj['position'].copy() + np.random.randn(3) * 0.02
             perturb = Rotation.from_rotvec(np.random.randn(3) * 0.05).as_matrix()
             new_obj['rotation'] = perturb @ obj['rotation']
             objects.append(new_obj)
@@ -406,25 +406,89 @@ def generate_pseudo_task(mesh_paths: List[str],
         waypoints = []
         for wp in base_waypoints:
             new_wp = dict(wp)
-            new_wp['position'] = wp['position'] + np.random.randn(3) * 0.01
+            new_wp['position'] = wp['position'].copy() + np.random.randn(3) * 0.01
             waypoints.append(new_wp)
 
         # Interpolate
         trajectory = interpolate_trajectory(waypoints)
         trajectory = augment_trajectory(trajectory)
 
-        # Render point clouds
-        demo = []
-        for step in trajectory:
-            pcd = render_point_clouds(objects, step['T_we'])
-            demo.append({
-                'pcd': pcd,
-                'T_we': step['T_we'].astype(np.float32),
-                'grip': step['grip'],
-            })
+        # Render point clouds with object attachment (Appendix D)
+        demo = _render_trajectory_with_attachment(trajectory, objects)
         demos.append(demo)
 
     return demos
+
+
+def _render_trajectory_with_attachment(
+    trajectory: List[dict],
+    objects: List[dict],
+) -> List[dict]:
+    """
+    Render point clouds along a trajectory, moving attached objects
+    with the gripper (Appendix D).
+
+    When gripper closes (1→0): attach nearest object.
+    When gripper opens (0→1): detach object at current position.
+    """
+    attached_idx = None     # index of attached object
+    grip_offset = None      # relative transform: T_EE_inv @ T_obj
+
+    obj_positions = [obj['position'].copy() for obj in objects]
+    obj_rotations = [obj['rotation'].copy() for obj in objects]
+
+    prev_grip = 1  # start open
+
+    demo = []
+    for step in trajectory:
+        cur_grip = step['grip']
+        T_we = step['T_we']
+
+        if prev_grip == 1 and cur_grip == 0:
+            # Open → closed: attach nearest object
+            ee_pos = T_we[:3, 3]
+            dists = [np.linalg.norm(obj_positions[i] - ee_pos)
+                     for i in range(len(objects))]
+            attached_idx = int(np.argmin(dists))
+            T_we_inv = np.eye(4)
+            T_we_inv[:3, :3] = T_we[:3, :3].T
+            T_we_inv[:3, 3] = -T_we[:3, :3].T @ T_we[:3, 3]
+            T_obj = np.eye(4)
+            T_obj[:3, :3] = obj_rotations[attached_idx]
+            T_obj[:3, 3] = obj_positions[attached_idx]
+            grip_offset = T_we_inv @ T_obj
+
+        elif prev_grip == 0 and cur_grip == 1:
+            # Closed → open: detach
+            attached_idx = None
+            grip_offset = None
+
+        # Move attached object
+        if attached_idx is not None and grip_offset is not None:
+            T_obj_new = T_we @ grip_offset
+            obj_positions[attached_idx] = T_obj_new[:3, 3].copy()
+            obj_rotations[attached_idx] = T_obj_new[:3, :3].copy()
+
+        prev_grip = cur_grip
+
+        # Build current-frame objects
+        current_objects = []
+        for i, obj in enumerate(objects):
+            current_objects.append({
+                'mesh_path': obj['mesh_path'],
+                'position': obj_positions[i].copy(),
+                'rotation': obj_rotations[i].copy(),
+                'scale': obj['scale'],
+            })
+
+        pcd = render_point_clouds(current_objects, T_we)
+        demo.append({
+            'pcd': pcd,
+            'T_we': T_we.astype(np.float32),
+            'grip': step['grip'],
+        })
+
+    return demo
 
 
 def generate_pseudo_demo_batch(mesh_paths: List[str],

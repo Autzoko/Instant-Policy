@@ -378,6 +378,9 @@ def generate_bimanual_pseudo_task(
     Generate a complete bimanual pseudo-task: multiple demonstrations
     performing the same task with randomised starting poses.
 
+    Per Appendix D: when gripper state changes, the closest object is
+    attached/detached and moves rigidly with the gripper.
+
     Returns: list of num_demos demonstrations, each a list of
       {pcd: (N,3), T_we_left: (4,4), T_we_right: (4,4),
        grip_left: int, grip_right: int}
@@ -396,7 +399,7 @@ def generate_bimanual_pseudo_task(
         objects = []
         for obj in base_objects:
             new_obj = dict(obj)
-            new_obj['position'] = obj['position'] + np.random.randn(3) * 0.02
+            new_obj['position'] = obj['position'].copy() + np.random.randn(3) * 0.02
             perturb = Rotation.from_rotvec(np.random.randn(3) * 0.05).as_matrix()
             new_obj['rotation'] = perturb @ obj['rotation']
             objects.append(new_obj)
@@ -407,7 +410,7 @@ def generate_bimanual_pseudo_task(
             new_wp = dict(wp)
             for arm in ('left', 'right'):
                 new_wp[f'position_{arm}'] = (
-                    wp[f'position_{arm}'] + np.random.randn(3) * 0.01
+                    wp[f'position_{arm}'].copy() + np.random.randn(3) * 0.01
                 )
             waypoints.append(new_wp)
 
@@ -415,25 +418,94 @@ def generate_bimanual_pseudo_task(
         trajectory = interpolate_bimanual_trajectory(waypoints)
         trajectory = augment_bimanual_trajectory(trajectory)
 
-        # Render point clouds (shared scene, using midpoint of both EEs)
-        demo = []
-        for step in trajectory:
-            # Use midpoint pose for rendering viewpoint
-            mid_T = np.eye(4)
-            mid_T[:3, 3] = 0.5 * (
-                step['T_we_left'][:3, 3] + step['T_we_right'][:3, 3]
-            )
-            pcd = render_point_clouds(objects, mid_T)
-            demo.append({
-                'pcd': pcd,
-                'T_we_left': step['T_we_left'].astype(np.float32),
-                'T_we_right': step['T_we_right'].astype(np.float32),
-                'grip_left': step['grip_left'],
-                'grip_right': step['grip_right'],
-            })
+        # ── Simulate object attachment/detachment (Appendix D) ──
+        # Track per-arm attachment: which object index, and the relative
+        # transform from gripper to object at the moment of grasping.
+        demo = _render_trajectory_with_attachment(trajectory, objects)
         demos.append(demo)
 
     return demos
+
+
+def _render_trajectory_with_attachment(
+    trajectory: List[dict],
+    objects: List[dict],
+) -> List[dict]:
+    """
+    Render point clouds along a bimanual trajectory, moving attached
+    objects with the gripper (Appendix D).
+
+    When gripper closes (1→0): attach nearest object (rigidly parent
+    its pose to the gripper). When gripper opens (0→1): detach and
+    leave the object at its current position.
+    """
+    # Per-arm attachment state
+    attached = {'left': None, 'right': None}   # index into objects
+    grip_offset = {'left': None, 'right': None}  # T_EE_inv @ T_obj at attach time
+
+    # Mutable copy of object poses (updated when objects move)
+    obj_positions = [obj['position'].copy() for obj in objects]
+    obj_rotations = [obj['rotation'].copy() for obj in objects]
+
+    prev_grip = {'left': 1, 'right': 1}  # start open
+
+    demo = []
+    for step in trajectory:
+        for arm in ('left', 'right'):
+            cur_grip = step[f'grip_{arm}']
+            T_we = step[f'T_we_{arm}']
+
+            # Detect grip state transition
+            if prev_grip[arm] == 1 and cur_grip == 0:
+                # Open → closed: attach nearest object
+                ee_pos = T_we[:3, 3]
+                dists = [np.linalg.norm(obj_positions[i] - ee_pos)
+                         for i in range(len(objects))]
+                nearest = int(np.argmin(dists))
+                attached[arm] = nearest
+                # Store offset: T_obj in EE frame
+                T_we_inv = np.eye(4)
+                T_we_inv[:3, :3] = T_we[:3, :3].T
+                T_we_inv[:3, 3] = -T_we[:3, :3].T @ T_we[:3, 3]
+                T_obj = np.eye(4)
+                T_obj[:3, :3] = obj_rotations[nearest]
+                T_obj[:3, 3] = obj_positions[nearest]
+                grip_offset[arm] = T_we_inv @ T_obj
+
+            elif prev_grip[arm] == 0 and cur_grip == 1:
+                # Closed → open: detach (object stays at current position)
+                attached[arm] = None
+                grip_offset[arm] = None
+
+            # Move attached object with gripper
+            if attached[arm] is not None and grip_offset[arm] is not None:
+                idx = attached[arm]
+                T_obj_new = T_we @ grip_offset[arm]
+                obj_positions[idx] = T_obj_new[:3, 3].copy()
+                obj_rotations[idx] = T_obj_new[:3, :3].copy()
+
+            prev_grip[arm] = cur_grip
+
+        # Build current-frame objects for rendering
+        current_objects = []
+        for i, obj in enumerate(objects):
+            current_objects.append({
+                'mesh_path': obj['mesh_path'],
+                'position': obj_positions[i].copy(),
+                'rotation': obj_rotations[i].copy(),
+                'scale': obj['scale'],
+            })
+
+        pcd = render_point_clouds(current_objects, None)
+        demo.append({
+            'pcd': pcd,
+            'T_we_left': step['T_we_left'].astype(np.float32),
+            'T_we_right': step['T_we_right'].astype(np.float32),
+            'grip_left': step['grip_left'],
+            'grip_right': step['grip_right'],
+        })
+
+    return demo
 
 
 def generate_bimanual_pseudo_demo_batch(
