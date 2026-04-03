@@ -520,12 +520,19 @@ class BimanualGraphDiffusionPolicy(nn.Module):
             grip_gt_r, grip_k_r.unsqueeze(0), kp,
         )
 
-        # 7. Normalise and compute loss
+        # 7. Normalise and compute loss (Appendix E)
+        # "we normalise ∇p̂_t and ∇p̂_r to be between −1 and 1 independently"
         norm_t = 2 * c.max_translation
+        kp_radius = kp.norm(dim=-1).max()
+        norm_r = 2 * c.max_rotation_rad * kp_radius
         flow_target_l[..., :3] /= norm_t
+        flow_target_l[..., 3:6] /= norm_r
         flow_l[..., :3] = flow_l[..., :3] / norm_t
+        flow_l[..., 3:6] = flow_l[..., 3:6] / norm_r
         flow_target_r[..., :3] /= norm_t
+        flow_target_r[..., 3:6] /= norm_r
         flow_r[..., :3] = flow_r[..., :3] / norm_t
+        flow_r[..., 3:6] = flow_r[..., 3:6] / norm_r
 
         loss_l = diffusion_loss(flow_l, flow_target_l)
         loss_r = diffusion_loss(flow_r, flow_target_r)
