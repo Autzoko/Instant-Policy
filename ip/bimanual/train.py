@@ -218,7 +218,7 @@ def train_bimanual_model(
             running_loss = 0.0
             log_steps = 0
 
-        if step % 2_000 == 0 and _is_main():
+        if step % 1_000 == 0 and _is_main():
             ckpt_path = os.path.join(save_dir, f'bimanual_step{step}.pt')
             torch.save({
                 'step': step,
