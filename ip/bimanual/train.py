@@ -162,6 +162,10 @@ def train_bimanual_model(
         ckpt = torch.load(resume_from, map_location=device)
         raw_model.load_state_dict(ckpt['model'])
         optimiser.load_state_dict(ckpt['optimiser'])
+        if 'scheduler' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler'])
+        if 'scaler' in ckpt:
+            scaler.load_state_dict(ckpt['scaler'])
         start_step = ckpt.get('step', 0)
         _print_main(f"Resumed from step {start_step}")
 
@@ -214,12 +218,14 @@ def train_bimanual_model(
             running_loss = 0.0
             log_steps = 0
 
-        if step % 10_000 == 0 and _is_main():
+        if step % 2_000 == 0 and _is_main():
             ckpt_path = os.path.join(save_dir, f'bimanual_step{step}.pt')
             torch.save({
                 'step': step,
                 'model': raw_model.state_dict(),
                 'optimiser': optimiser.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'scaler': scaler.state_dict(),
                 'cfg': cfg,
             }, ckpt_path)
             print(f"  Checkpoint saved to {ckpt_path}")
@@ -231,6 +237,8 @@ def train_bimanual_model(
             'step': step,
             'model': raw_model.state_dict(),
             'optimiser': optimiser.state_dict(),
+            'scheduler': scheduler.state_dict(),
+            'scaler': scaler.state_dict(),
             'cfg': cfg,
         }, final_path)
         print(f"Training complete. Final model saved to {final_path}")
