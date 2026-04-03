@@ -350,7 +350,7 @@ def augment_bimanual_trajectory(
 
     # Local disturbances (independently per arm)
     for arm in ('left', 'right'):
-        if np.random.random() < disturbance_prob:
+        if np.random.random() < disturbance_prob and len(aug) > 2:
             num_disturb = np.random.randint(1, max(2, len(aug) // 5))
             for _ in range(num_disturb):
                 idx = np.random.randint(1, len(aug) - 1)
