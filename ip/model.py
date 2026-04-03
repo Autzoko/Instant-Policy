@@ -335,12 +335,17 @@ class GraphDiffusionPolicy(nn.Module):
         )  # (1, T, K, 7)
 
         # 7. Normalise both target and prediction to [-1, 1] (Appendix E)
+        # "we normalise ∇p̂_t and ∇p̂_r to be between −1 and 1 independently"
         # Translation flow: normalise by 2 * max_translation (capped range)
-        # Rotation flow: normalise by 1 (already small, kept as-is)
+        # Rotation flow: normalise by 2 * max_rotation * max_keypoint_radius
         # Gripper gradient: already in [-2, 2], kept as-is
         norm_t = 2 * c.max_translation
+        kp_radius = kp.norm(dim=-1).max()
+        norm_r = 2 * c.max_rotation_rad * kp_radius
         flow_target[..., :3] = flow_target[..., :3] / norm_t
+        flow_target[..., 3:6] = flow_target[..., 3:6] / norm_r
         flow_pred[..., :3] = flow_pred[..., :3] / norm_t
+        flow_pred[..., 3:6] = flow_pred[..., 3:6] / norm_r
 
         return diffusion_loss(flow_pred, flow_target)
 
