@@ -260,7 +260,14 @@ def interpolate_bimanual_trajectory(
 
 def _interpolate_single_arm(waypoints: List[dict], arm: str,
                             spacing_trans: float) -> List[dict]:
-    """Interpolate one arm's trajectory from bimanual waypoints."""
+    """Interpolate one arm's trajectory from bimanual waypoints.
+
+    Uses random interpolation method (linear or cubic) per Appendix D:
+    'we use different interpolation strategies between the waypoints
+    (e.g. linear, cubic or interpolating while staying on a spherical manifold)'
+    """
+    from scipy.interpolate import CubicSpline
+
     positions = np.array([wp[f'position_{arm}'] for wp in waypoints])
     rotations = [Rotation.from_matrix(wp[f'rotation_{arm}']) for wp in waypoints]
 
@@ -272,11 +279,16 @@ def _interpolate_single_arm(waypoints: List[dict], arm: str,
     t_wp = np.linspace(0, 1, len(waypoints))
     t_dense = np.linspace(0, 1, num_steps)
 
-    # Position interpolation (linear)
-    dense_positions = np.array([
-        np.interp(t_dense, t_wp, positions[:, d])
-        for d in range(3)
-    ]).T
+    # Position interpolation: randomly linear or cubic (Appendix D)
+    method = np.random.choice(['linear', 'cubic'])
+    if method == 'cubic' and len(waypoints) >= 4:
+        cs = CubicSpline(t_wp, positions, axis=0)
+        dense_positions = cs(t_dense)
+    else:
+        dense_positions = np.array([
+            np.interp(t_dense, t_wp, positions[:, d])
+            for d in range(3)
+        ]).T
 
     # Rotation interpolation (slerp)
     key_rots = Rotation.concatenate(rotations)
