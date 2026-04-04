@@ -16,6 +16,8 @@ Code for the paper: "Instant Policy: In-Context Imitation Learning via Graph Dif
 ```
 instant_policy/
 ├── deploy.py / deploy_sim.py       # Original deployment scripts (pre-trained .so model)
+├── eval_bimanual.py                # Bimanual evaluation CLI (PerAct2 tasks)
+├── bimanual_sim_utils.py           # Bimanual RLBench environment + rollout utilities
 ├── sim_utils.py / utils.py         # Simulation and point cloud utilities
 ├── instant_policy.so / .pyi        # Pre-trained compiled model (inference only)
 │
@@ -328,67 +330,103 @@ peract2_data/
 └── ... (13 bimanual tasks)
 ```
 
-### Testing / Inference
+### Evaluation on PerAct2 Bimanual Tasks
 
-After training completes, test the bimanual model:
+The evaluation protocol is aligned with the Instant Policy paper (Section 4.1) and PerAct2 (Section 4.1):
+
+- **Metric**: Task success rate (binary: succeeded or not).
+- **Context**: N=2 live demonstrations collected at the start of evaluation.
+- **Randomisation**: Object poses randomised at each rollout via `task.reset()`.
+- **Execution**: Closed-loop — observe, predict T=8 actions, execute, repeat (up to 30 cycles).
+- **Success**: Determined by RLBench's built-in task completion conditions (`terminate and reward > 0`).
+
+#### Evaluate on a single task
+
+```bash
+python eval_bimanual.py \
+    --checkpoint ./checkpoints_bimanual/bimanual_final.pt \
+    --tasks coordinated_push_box \
+    --num_rollouts 100 \
+    --num_demos 2
+```
+
+#### Evaluate on all 13 PerAct2 tasks
+
+```bash
+python eval_bimanual.py \
+    --checkpoint ./checkpoints_bimanual/bimanual_final.pt \
+    --num_rollouts 100 \
+    --save_results ./results/bimanual_eval.json
+```
+
+#### Quick test (fewer rollouts)
+
+```bash
+python eval_bimanual.py \
+    --checkpoint ./checkpoints_bimanual/bimanual_final.pt \
+    --tasks coordinated_push_box coordinated_lift_tray \
+    --num_rollouts 10
+```
+
+#### Evaluation parameters
+
+| Parameter | Default | Paper value | Description |
+|-----------|---------|-------------|-------------|
+| `--num_demos` | 2 | 2 | Demonstrations as in-context examples (N) |
+| `--num_rollouts` | 100 | 100 | Rollouts per task |
+| `--execution_horizon` | 8 | 8 | Actions executed per cycle (T) |
+| `--num_traj_wp` | 10 | 10 | Demo waypoints after downsampling (L) |
+| `--max_steps` | 30 | 30 | Max observe-predict-execute cycles |
+
+#### Output format
+
+Results are printed as a table and optionally saved as JSON:
+
+```
+==================================================
+Bimanual Evaluation Results
+==================================================
+Task                                       SR
+--------------------------------------------------
+  coordinated_push_box                  57/100 (57%)
+  coordinated_lift_ball                 50/100 (50%)
+  coordinated_lift_tray                  4/100 (4%)
+  ...
+--------------------------------------------------
+  Average                               16.8%
+  Tasks evaluated: 13/13
+==================================================
+```
+
+### Inference API
+
+For custom integration (outside RLBench), use the model directly:
 
 ```python
 import torch
 from ip.bimanual import BimanualIPConfig, BimanualGraphDiffusionPolicy
 
 # Load model
-cfg = BimanualIPConfig()
-model = BimanualGraphDiffusionPolicy(cfg).cuda()
 ckpt = torch.load('./checkpoints_bimanual/bimanual_final.pt')
+model = BimanualGraphDiffusionPolicy(ckpt.get('cfg', BimanualIPConfig()))
 model.load_state_dict(ckpt['model'])
-model.eval()
+model.cuda().eval()
 
-# Prepare input: demonstrations + current observation
+# Build input: demonstrations + current observation
 sample = {
-    'demos': [
-        {
-            'pcds': [pcd_wp0, pcd_wp1, ...],           # list of (2048, 3) tensors
-            'T_w_es_left':  [T_l_wp0, T_l_wp1, ...],   # list of (4, 4) tensors
-            'T_w_es_right': [T_r_wp0, T_r_wp1, ...],   # list of (4, 4) tensors
-            'grips_left':   [1, 0, 0, ...],             # list of int (0=closed, 1=open)
-            'grips_right':  [1, 1, 0, ...],
-        },
-        # ... more demos for better in-context learning
-    ],
+    'demos': [demo_dict_1, demo_dict_2],   # each with pcds, T_w_es_left/right, grips_left/right
     'current': {
-        'pcd': current_pcd,               # (2048, 3) tensor, world frame
-        'T_w_e_left':  current_T_left,    # (4, 4) tensor, left EE pose
-        'T_w_e_right': current_T_right,   # (4, 4) tensor, right EE pose
-        'grip_left': 1,                   # current left gripper state
-        'grip_right': 1,                  # current right gripper state
+        'pcd': pcd_tensor,                  # (2048, 3) world frame
+        'T_w_e_left':  T_left_tensor,       # (4, 4)
+        'T_w_e_right': T_right_tensor,      # (4, 4)
+        'grip_left': 1, 'grip_right': 1,
     },
 }
 
-# Predict actions for both arms
-actions_left, grips_left, actions_right, grips_right = model.predict_actions(sample)
-# actions_left:  (8, 4, 4) — relative SE(3) transforms for left arm
-# grips_left:    (8,)      — gripper commands (0=close, 1=open)
-# actions_right: (8, 4, 4) — relative SE(3) transforms for right arm
-# grips_right:   (8,)      — gripper commands
-```
-
-### Evaluating on PerAct2 Tasks
-
-```python
-from ip.bimanual.dataset import PerAct2Dataset, BimanualIPConfig
-
-# Load PerAct2 demos as evaluation context
-cfg = BimanualIPConfig()
-dataset = PerAct2Dataset(
-    data_dir='./peract2_data',
-    task_names=['coordinated_push_box'],
-    cfg=cfg,
-    data_format='npz',
-)
-
-# Use first few demos as context, predict on the rest
-demo = dataset[0]
-# demo contains: pcds, T_w_es_left, T_w_es_right, grips_left, grips_right
+# Predict
+actions_l, grips_l, actions_r, grips_r = model.predict_actions(sample)
+# actions_{l,r}: (T, 4, 4) relative SE(3) transforms
+# grips_{l,r}:   (T,) binary gripper commands
 ```
 
 ---
