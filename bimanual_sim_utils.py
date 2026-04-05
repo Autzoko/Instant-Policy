@@ -22,21 +22,26 @@ from utils import pose_to_transform, transform_to_pose, subsample_pcd, transform
 
 
 # ── PerAct2 bimanual tasks ───────────────────────────────────────────
-# 13 tasks from the PerAct2 benchmark (Grotz et al., 2024)
+# Tasks from the PerAct2 bimanual RLBench fork (markusgrotz/RLBench).
+# These live in rlbench.bimanual_tasks, NOT rlbench.tasks.
+# Keys are user-facing names; values are (module_name, class_name).
 BIMANUAL_TASK_MAP = {
-    'coordinated_push_box':          'CoordinatedPushBox',
-    'coordinated_lift_ball':         'CoordinatedLiftBall',
-    'coordinated_lift_tray':         'CoordinatedLiftTray',
-    'handover_item':                 'HandoverItem',
-    'bimanual_straighten_rope':      'BimanualStraightenRope',
-    'bimanual_sweep_to_dustpan':     'BimanualSweepToDustpan',
-    'bimanual_pick_laptop':          'BimanualPickLaptop',
-    'bimanual_pick_plate':           'BimanualPickPlate',
-    'dual_push_buttons':             'DualPushButtons',
-    'bimanual_put_item_in_drawer':   'BimanualPutItemInDrawer',
-    'bimanual_place_wine':           'BimanualPlaceWine',
-    'bimanual_put_bottle_in_fridge': 'BimanualPutBottleInFridge',
-    'bimanual_close_laptop':         'BimanualCloseLaptop',
+    'bimanual_push_box':             ('bimanual_push_box',             'BimanualPushBox'),
+    'bimanual_lift_ball':            ('bimanual_lift_ball',            'BimanualLiftBall'),
+    'bimanual_lift_tray':            ('bimanual_lift_tray',            'BimanualLiftTray'),
+    'bimanual_handover_item':        ('bimanual_handover_item',        'BimanualHandoverItem'),
+    'bimanual_straighten_rope':      ('bimanual_straighten_rope',      'BimanualStraightenRope'),
+    'bimanual_sweep_to_dustpan':     ('bimanual_sweep_to_dustpan',     'BimanualSweepToDustpan'),
+    'bimanual_pick_laptop':          ('bimanual_pick_laptop',          'BimanualPickLaptop'),
+    'bimanual_pick_plate':           ('bimanual_pick_plate',           'BimanualPickPlate'),
+    'bimanual_dual_push_buttons':    ('bimanual_dual_push_buttons',    'BimanualDualPushButtons'),
+    'bimanual_put_item_in_drawer':   ('bimanual_put_item_in_drawer',   'BimanualPutItemInDrawer'),
+    'bimanual_put_bottle_in_fridge': ('bimanual_put_bottle_in_fridge', 'BimanualPutBottleInFridge'),
+    'bimanual_set_the_table':        ('bimanual_set_the_table',        'BimanualSetTheTable'),
+    'bimanual_take_tray_out_of_oven':('bimanual_take_tray_out_of_oven','BimanualTakeTrayOutOfOven'),
+    'bimanual_handover_item_easy':   ('bimanual_handover_item_easy',   'BimanualHandoverItemEasy'),
+    'coordinated_close_jar':         ('coordinated_close_jar',         'CoordinatedCloseJar'),
+    'coordinated_lift_stick':        ('coordinated_lift_stick',        'CoordinatedLiftStick'),
 }
 
 
@@ -320,26 +325,41 @@ def create_bimanual_env(task_name: str, headless: bool = True):
 
 
 def _resolve_task_class(task_name: str, env):
-    """Resolve task name to RLBench task class, trying multiple naming conventions."""
-    import rlbench.tasks as rlbench_tasks
+    """Resolve task name to RLBench bimanual task class.
 
-    # Try direct class name from our mapping
+    PerAct2's bimanual tasks live in rlbench.bimanual_tasks (not rlbench.tasks).
+    """
+    import importlib
+
+    # 1. Try our mapping (bimanual_tasks module)
     if task_name in BIMANUAL_TASK_MAP:
-        cls_name = BIMANUAL_TASK_MAP[task_name]
-        if hasattr(rlbench_tasks, cls_name):
-            return getattr(rlbench_tasks, cls_name)
+        module_name, cls_name = BIMANUAL_TASK_MAP[task_name]
+        try:
+            mod = importlib.import_module(f'rlbench.bimanual_tasks.{module_name}')
+            return getattr(mod, cls_name)
+        except (ImportError, AttributeError):
+            pass
 
-    # Try CamelCase conversion of task_name
-    camel = ''.join(word.capitalize() for word in task_name.split('_'))
-    if hasattr(rlbench_tasks, camel):
-        return getattr(rlbench_tasks, camel)
+    # 2. Try importing directly from bimanual_tasks by snake_case name
+    try:
+        mod = importlib.import_module(f'rlbench.bimanual_tasks.{task_name}')
+        camel = ''.join(word.capitalize() for word in task_name.split('_'))
+        if hasattr(mod, camel):
+            return getattr(mod, camel)
+    except ImportError:
+        pass
 
-    # Try as-is
-    if hasattr(rlbench_tasks, task_name):
-        return getattr(rlbench_tasks, task_name)
+    # 3. Fallback: try standard rlbench.tasks
+    try:
+        import rlbench.tasks as rlbench_tasks
+        camel = ''.join(word.capitalize() for word in task_name.split('_'))
+        if hasattr(rlbench_tasks, camel):
+            return getattr(rlbench_tasks, camel)
+    except ImportError:
+        pass
 
     raise ValueError(
-        f"Task '{task_name}' not found in rlbench.tasks. "
+        f"Task '{task_name}' not found. "
         f"Available bimanual tasks: {list(BIMANUAL_TASK_MAP.keys())}"
     )
 

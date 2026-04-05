@@ -6,10 +6,10 @@ Usage examples:
   # Evaluate on a single task (100 rollouts, 2 demos)
   python eval_bimanual.py \
       --checkpoint ./checkpoints_bimanual/bimanual_final.pt \
-      --tasks coordinated_push_box \
+      --tasks bimanual_push_box \
       --num_rollouts 100
 
-  # Evaluate on all 13 PerAct2 tasks
+  # Evaluate on all PerAct2 bimanual tasks
   python eval_bimanual.py \
       --checkpoint ./checkpoints_bimanual/bimanual_final.pt \
       --num_rollouts 100
@@ -17,7 +17,7 @@ Usage examples:
   # Quick test (fewer rollouts)
   python eval_bimanual.py \
       --checkpoint ./checkpoints_bimanual/bimanual_final.pt \
-      --tasks coordinated_push_box coordinated_lift_tray \
+      --tasks bimanual_push_box bimanual_lift_tray \
       --num_rollouts 10
 
 Evaluation protocol (aligned with Instant Policy paper, Section 4.1):
