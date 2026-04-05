@@ -314,6 +314,7 @@ def create_bimanual_env(task_name: str, headless: bool = True):
         action_mode=action_mode,
         obs_config=obs_config,
         headless=headless,
+        robot_setup='dual_panda',
     )
     env.launch()
 
