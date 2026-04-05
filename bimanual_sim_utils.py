@@ -56,32 +56,55 @@ def get_bimanual_point_cloud(
     """
     Merge point clouds from multiple cameras.
 
+    PerAct2 bimanual observations may store camera data in:
+      - obs.<cam>_point_cloud (flat, like standard RLBench)
+      - obs.perception_data['<cam>_point_cloud']
+      - obs.left.<cam>_point_cloud / obs.right.<cam>_point_cloud
+
     When use_mask=True, only points belonging to task-relevant objects
     are kept (using RLBench's ground-truth segmentation masks).
-    This mirrors the single-arm sim_utils.get_point_cloud().
     """
     pcds = []
+
+    # Collect all sources to check for camera data
+    sources = [obs]
+    if hasattr(obs, 'left'):
+        sources.append(obs.left)
+    if hasattr(obs, 'right'):
+        sources.append(obs.right)
+
     for cam in camera_names:
+        pc = None
+        mask = None
         pc_attr = f'{cam}_point_cloud'
-        if not hasattr(obs, pc_attr):
-            continue
-        pc = getattr(obs, pc_attr)
+        mask_attr = f'{cam}_mask'
+
+        # Try each source
+        for src in sources:
+            if hasattr(src, pc_attr) and getattr(src, pc_attr) is not None:
+                pc = getattr(src, pc_attr)
+                if hasattr(src, mask_attr):
+                    mask = getattr(src, mask_attr)
+                break
+
+        # Also try perception_data dict
+        if pc is None and hasattr(obs, 'perception_data') and obs.perception_data:
+            if pc_attr in obs.perception_data:
+                pc = obs.perception_data[pc_attr]
+            if mask_attr in obs.perception_data:
+                mask = obs.perception_data[mask_attr]
+
         if pc is None:
             continue
         if pc.ndim == 3:
             pc = pc.reshape(-1, 3)
 
-        if use_mask:
-            mask_attr = f'{cam}_mask'
-            if hasattr(obs, mask_attr):
-                mask = getattr(obs, mask_attr)
-                if mask is not None:
-                    if mask.ndim > 1:
-                        mask = mask.reshape(-1)
-                    # Keep only object pixels (same heuristic as single-arm)
-                    valid_mask = mask > mask_threshold
-                    if valid_mask.shape[0] == pc.shape[0]:
-                        pc = pc[valid_mask]
+        if use_mask and mask is not None:
+            if mask.ndim > 1:
+                mask = mask.reshape(-1)
+            valid_mask = mask > mask_threshold
+            if valid_mask.shape[0] == pc.shape[0]:
+                pc = pc[valid_mask]
 
         # Filter invalid points
         valid = np.isfinite(pc).all(axis=1) & (np.abs(pc) < 5.0).all(axis=1)
@@ -99,44 +122,47 @@ def get_bimanual_point_cloud(
 def extract_bimanual_poses(obs) -> Tuple[np.ndarray, np.ndarray]:
     """
     Extract left and right end-effector poses as (4, 4) matrices.
-    Handles both PerAct2 bimanual and standard RLBench observation formats.
+
+    PerAct2 bimanual observations use nested structure:
+        obs.left.gripper_pose  (7,) [x,y,z,qx,qy,qz,qw]
+        obs.right.gripper_pose (7,)
     """
-    # PerAct2 bimanual format: 7D pose [x,y,z,qx,qy,qz,qw]
+    # PerAct2 bimanual format: obs.left / obs.right sub-objects
+    if hasattr(obs, 'left') and hasattr(obs, 'right'):
+        left = obs.left
+        right = obs.right
+        if hasattr(left, 'gripper_pose') and left.gripper_pose is not None:
+            T_l = pose_to_transform(left.gripper_pose)
+            T_r = pose_to_transform(right.gripper_pose)
+            return T_l, T_r
+        if hasattr(left, 'gripper_matrix') and left.gripper_matrix is not None:
+            return (
+                np.array(left.gripper_matrix, dtype=np.float32).reshape(4, 4),
+                np.array(right.gripper_matrix, dtype=np.float32).reshape(4, 4),
+            )
+
+    # Flat attribute fallback (older RLBench forks)
     if hasattr(obs, 'left_gripper_pose') and hasattr(obs, 'right_gripper_pose'):
-        T_l = pose_to_transform(obs.left_gripper_pose)
-        T_r = pose_to_transform(obs.right_gripper_pose)
-        return T_l, T_r
-
-    # Alternative attribute names
-    if hasattr(obs, 'left_ee_pose') and hasattr(obs, 'right_ee_pose'):
-        T_l = pose_to_transform(obs.left_ee_pose)
-        T_r = pose_to_transform(obs.right_ee_pose)
-        return T_l, T_r
-
-    # Matrix format
-    if hasattr(obs, 'left_gripper_matrix') and hasattr(obs, 'right_gripper_matrix'):
-        return (
-            np.array(obs.left_gripper_matrix, dtype=np.float32).reshape(4, 4),
-            np.array(obs.right_gripper_matrix, dtype=np.float32).reshape(4, 4),
-        )
+        return pose_to_transform(obs.left_gripper_pose), \
+               pose_to_transform(obs.right_gripper_pose)
 
     raise ValueError(
-        "Cannot extract bimanual EE poses from observation. "
-        "Expected attributes: left_gripper_pose/right_gripper_pose "
-        "or left_ee_pose/right_ee_pose."
+        "Cannot extract bimanual EE poses. Expected obs.left.gripper_pose "
+        "or obs.left_gripper_pose."
     )
 
 
 def extract_bimanual_grippers(obs) -> Tuple[int, int]:
     """Extract left and right gripper states (0=closed, 1=open)."""
-    gl = 1
-    gr = 1
+    # PerAct2 bimanual format: obs.left.gripper_open / obs.right.gripper_open
+    if hasattr(obs, 'left') and hasattr(obs, 'right'):
+        gl = int(float(getattr(obs.left, 'gripper_open', 1.0)) > 0.5)
+        gr = int(float(getattr(obs.right, 'gripper_open', 1.0)) > 0.5)
+        return gl, gr
 
-    if hasattr(obs, 'left_gripper_open'):
-        gl = int(float(obs.left_gripper_open) > 0.5)
-    if hasattr(obs, 'right_gripper_open'):
-        gr = int(float(obs.right_gripper_open) > 0.5)
-
+    # Flat attribute fallback
+    gl = int(float(getattr(obs, 'left_gripper_open', 1.0)) > 0.5)
+    gr = int(float(getattr(obs, 'right_gripper_open', 1.0)) > 0.5)
     return gl, gr
 
 
@@ -281,30 +307,14 @@ def create_bimanual_env(task_name: str, headless: bool = True):
     from rlbench.observation_config import ObservationConfig
     from rlbench.environment import Environment
 
-    # Try bimanual action modes first (PerAct2 fork)
-    try:
-        from rlbench.action_modes.action_mode import BimanualMoveArmThenGripper
-        from rlbench.action_modes.arm_action_modes import (
-            BimanualEndEffectorPoseViaIK,
-        )
-        from rlbench.action_modes.gripper_action_modes import BimanualDiscrete
+    from rlbench.action_modes.action_mode import BimanualMoveArmThenGripper
+    from rlbench.action_modes.arm_action_modes import BimanualEndEffectorPoseViaPlanning
+    from rlbench.action_modes.gripper_action_modes import BimanualDiscrete
 
-        action_mode = BimanualMoveArmThenGripper(
-            arm_action_mode=BimanualEndEffectorPoseViaIK(),
-            gripper_action_mode=BimanualDiscrete(),
-        )
-    except ImportError:
-        # Fallback: try IK variant naming
-        from rlbench.action_modes.action_mode import BimanualMoveArmThenGripper
-        from rlbench.action_modes.arm_action_modes import (
-            BimanualEndEffectorPoseViaPlanning,
-        )
-        from rlbench.action_modes.gripper_action_modes import BimanualDiscrete
-
-        action_mode = BimanualMoveArmThenGripper(
-            arm_action_mode=BimanualEndEffectorPoseViaPlanning(),
-            gripper_action_mode=BimanualDiscrete(),
-        )
+    action_mode = BimanualMoveArmThenGripper(
+        arm_action_mode=BimanualEndEffectorPoseViaPlanning(),
+        gripper_action_mode=BimanualDiscrete(),
+    )
 
     obs_config = ObservationConfig()
     obs_config.set_all(True)
